@@ -1,0 +1,1331 @@
+---
+title: "Trait Matrix Raw to Clean"
+output: html_document
+date: "2024-09-19"
+---
+
+**Purpose** 
+To transform raw data from repositories into cleaned up csv flat files to be merged into a trait matrix
+
+**Steps**
+
+1) Upload raw data
+2) Transform raw data into calculated statistics per country per dataframe
+3) Ensure each dataframe has the same country names 
+4) Ensure that each dataframe is the same length
+5) Write individual csv for each dataframe
+6) Merge all dataframes into one big global trait matrix 
+
+
+###Final CSV: global_trait_matrix_20240920.csv
+^^ this will be merged with outcome dataframes (e.g. TBV outcomes) and ran with BRT
+
+
+*Note: some of the information per data source is sparse, will go back and add those finer details in later.*
+
+
+##Step 1. Upload raw data
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## load in necessary packages
+library(readr)
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(sf)
+library(terra)
+library(rnaturalearth)
+library(rworldmap)
+library(raster)
+library(exactextractr)
+library(countrycode)
+
+## load in necessary raw data
+ecoregion_raw <- st_read("trait_matrix/raw/terr-ecoregions-TNC/tnc_terr_ecoregions.shp")
+
+koepp_raw <- rast("trait_matrix/raw/koeppen-geiger/Map_KG-Global/KG_1986-2010.grd")
+
+vegdisim_raw <- rast("trait_matrix/raw/vegetation_dissimilarity/Dissimilarity_01_05_5km_uint32.tif")
+
+rulis_raw <- read.csv("trait_matrix/raw/rulis/20240528 at 193529.csv")
+
+livestock_raw <- rast("trait_matrix/raw/livestock/6_Ct_2015_Aw.tif")
+
+pepfar_raw <- read.csv("trait_matrix/raw/pepfar/PEPFARExpenditureAnalysis.csv")
+
+socialvulnerability_raw <- rast("trait_matrix/raw/social_vulnerability/povmap-grdi-v1-geotiff/povmap-grdi-v1_SHDI.tif")
+
+acled_raw <- read.csv("trait_matrix/raw/acled/1997-01-01-2023-12-31-Caucasus_and_Central_Asia-Central_America-East_Asia-Eastern_Africa-Europe-Middle_Africa-Middle_East-North_America-Northern_Africa-Oceania-South_America-South_Asia-Southeast_Asia-Southern_Africa-Western_Africa.csv")
+
+humpopcount_raw <- rast("trait_matrix/raw/humanpop_count/gpw_v4_population_count_rev11_2015_2pt5_min.tif")
+
+wb_landarea_raw <- read.csv("trait_matrix/raw/worldbank/land_sqarea/d677e443-1ebe-47a1-9e1d-d38fefe5c00c_Data.csv")
+
+
+wb_gini_raw <- read.csv("trait_matrix/raw/worldbank/gini_index/API_SI.POV.GINI_DS2_en_csv_v2_45291/API_SI.POV.GINI_DS2_en_csv_v2_45291_corrected.csv")
+
+wb_adultliteracy_raw <- read.csv("trait_matrix/raw/worldbank/adultliteracy/7970c429-1461-4677-a730-5ae14ef8f3ce_Data.csv")
+
+wb_poverty_belownational_raw <- read.csv("trait_matrix/raw/worldbank/poverty_belownational/df4f9fe4-99cd-4d9b-83be-f76bf3344969_Data.csv")
+
+wb_healthexpenditures_raw <- read.csv("trait_matrix/raw/worldbank/healthcare_expenditures/771d19a4-8c9b-4fb6-af81-c5a46e91c63c_Data.csv")
+
+```
+
+Upload global map
+*Note: this won't be the final list for what I use in the analysis but helps with visualizing traits*
+```{r}
+## for most things, rnaturalworld works
+#worldmap <- ne_countries(scale = "large", returnclass = "sf") #original used this but also tried sovereignty may help with weird spelling
+
+worldmap <- ne_countries(scale = "large", type = "countries", returnclass = "sf")
+
+worldmap_names <- worldmap %>% 
+  dplyr::select(admin)
+
+
+## for koeppen-geiger rworldmap works based on recommendations but RWorldMap uses country borders derived from Natural Earth data
+worldmap_rwp <- getMap()
+worldmap_rwp_vector <- vect(worldmap_rwp)
+
+```
+
+
+##Step 2. Transform raw data to calculated statistics
+
+###Ecoregions
+
+*Information*
+**Title:** Terrestrial Ecoregions of the World
+**Credits:** World Wildlife Fund - US
+**Publication Date:** 2004
+**Citation:** Olson, D.M., E. Dinerstein, E.D. Wikramanayake, N.D. Burgess, G.V.N. Powell, E.C. Underwood, J.A. D'Amico, I. Itoua, H.E. Strand, J.C. Morrison, C.J. Loucks, T.F. Allnutt, T.H. Ricketts, Y. Kura, J.F. Lamoreux, W.W. Wettengel, P. Hedao, and K.R. Kassem. Terrestrial Ecoregions of the World: A New Map of Life on Earth (PDF, 1.1M) BioScience 51:933-938.
+**Other Citation Info:** This is an update to version 1.0 which was completed in 2001. 
+
+```{r}
+# extract ecoregion name from shapefile
+ecoregion_name <- ecoregion_raw[,"ECO_NAME"] 
+
+sf_use_s2(FALSE) #returns the value of this variable before (re)setting it
+ecoregion_intersection <- st_intersection(ecoregion_name, worldmap_names) # creates intersection of ecoregion layer and country name
+
+# tally number of ecoregions per country
+ecoregion_countrytally <- ecoregion_intersection %>% 
+  group_by(admin, ECO_NAME) %>% 
+  tally()
+
+# turn into vector file
+ecoregion_calculated <- ecoregion_countrytally %>% 
+  st_drop_geometry(ecoregion_countrytally) %>% 
+  group_by(admin) %>% 
+  tally()
+
+# need to merge with admin
+
+# write csv
+
+```
+
+###Koppen-Geiger
+
+*Information*
+Climate classification after Kottek et al. (2006), downscaling after Rubel et al. (2017)
+**Citations:** Kottek, M., J. Grieser, C. Beck, B. Rudolf, and F. Rubel, 2006: World Map of the Köppen-Geiger climate classification updated. Meteorol. Z., 15, 259-263. ; Rubel, F., K. Brugger, K. Haslinger, and I. Auer, 2017: The climate of the 
+ European Alps: Shift of very high resolution Köppen-Geiger climate zones 1800-2100. Meteorol. Z., DOI 10.1127/metz/2016/0816.
+**Other Citation Info:** R source code to read and visualize Köppen-Geiger fields (Version of 19 August 2022)   
+
+```{r}
+## find modal koeppen-geiger climate zone per country
+koepp_mode <- terra::extract(koepp_raw, worldmap_rwp_vector, fun = "modal")
+
+## connect with admin name and layer
+koepp_mode_merge <- as.data.frame(worldmap_rwp_vector$ADMIN) %>% 
+  mutate(ID = seq(1:243)) %>% 
+  merge(koepp_mode, by = "ID")
+
+## give columns better names
+names(koepp_mode_merge) <- c("country_ID", "country_name", "ID")
+
+## translate ID to actual climate zone name
+# Legend must correspond to all climate classes, insert placeholders
+koepp_legend <- as.data.frame(seq(1,32,1)) 
+
+koepp_legend$climate <- c('Af', 'Am', 'As', 'Aw', 'BSh', 'BSk', 'BWh', 'BWk', 'Cfa', 'Cfb','Cfc', 'Csa', 'Csb', 'Csc', 'Cwa','Cwb', 'Cwc', 'Dfa', 'Dfb', 'Dfc','Dfd', 'Dsa', 'Dsb', 'Dsc', 'Dsd','Dwa', 'Dwb', 'Dwc', 'Dwd', 'EF','ET', 'Ocean')
+
+names(koepp_legend) <- c("ID", "climate_zone")
+
+## merge climate zone names
+koepp_mode_calculated <- koepp_mode_merge %>% 
+  merge(koepp_legend, by = "ID") %>% 
+  rename(admin = "country_name",
+         koeppen_climatezone_name = "climate_zone",
+         koeppen_climatezone_ID = "ID")
+
+# need to merge with admin
+
+# write csv
+
+```
+
+###Vegetation dissimilarity
+
+*Information*
+The datasets contain 14 metrics quantifying spatial heterogeneity of global habitat at multiple resolutions based on the textural features of Enhanced Vegetation Index (EVI) imagery acquired by the Moderate Resolution Imaging Spectroradiometer (MODIS). For additional information about the metrics and the evaluations of their utility for biodiversity modeling, please see the associated journal article:
+**Citations:** Tuanmu, M.-N. and W. Jetz. (2015) A global, remote sensing-based characterization of terrestrial habitat heterogeneity for biodiversity and ecosystem modeling. Global Ecology and Biogeography. DOI: 10.1111/geb.12365.
+**Other Citation Info:** Six first-order and 8 second-order texture measures are available at 30 arc-second (~1 km at the equator), 2.5 arc-minute (~5 km) and 12.5 arc-minute (~25 km) resolutions. The first-order texture measures are statistics describing the frequency distribution of EVI values and measureing compositional variability in EVI within an area. The second-order texture measures are statistics of the occurrence probabilities of different EVI combinations among pixel pairs within an area and thus also reflect spatial arrangement and dependency of the EVI values.
+
+https://www.earthenv.org/texture
+
+```{r}
+# make unique map for this section to not overwrite other stuff
+worldmap2 <- worldmap
+
+# overlap raster & polygons
+worldmap2$vegdisim_mean <- exact_extract(vegdisim_raw, worldmap2, 'mean')
+
+# make vector file 
+vegdisim_calculated <- worldmap2 %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(geounit, vegdisim_mean) %>% 
+  mutate(vegdisim_mean = (vegdisim_mean*0.0001)) %>% # according to Tuanmu 2015 this conversion is necessary look at trait matrix notes
+  rename(country = "geounit",
+         vegdissimilar_mean_1020 = "vegdisim_mean")
+
+# need to merge with admin
+
+# write csv
+
+```
+
+###RuLIS
+
+*Information*
+The Rural Livelihoods Information System (RuLIS) is an initiative aimed at facilitating access to cross-country comparable data and information on income, livelihoods and their evolution at the sub national level. The system uses household-based surveys from which there are microdata available to compute indicators and variables at the household and individual level.
+
+To date, RuLIS provides information on 116 ready-made indicators computed from 57 household- based surveys from 38 countries around the world. In addition, it includes 15 relevant time-series national-level indicators extracted from international data repositories, primarily the World Bank and FAOSTAT.
+
+```{r}
+## select best indicators based upon early EDA or look at trait matrix notes
+
+# Nation, WDI data = Employment in agriculture (% of total employment, modeled ILO estimate)
+rulis_employag_perc_18 <- rulis_raw %>% 
+  filter(seriescode == "SL.AGR.EMPL.ZS") %>% 
+  mutate(value = as.numeric(value)) %>% 
+  dplyr::select(country, value) %>% 
+  rename(rulis_employag_perc_18 = value)
+
+# National, WDI data - Literacy rate, adult total (% of people ages 15 and above)
+rulis_adultliteracy_perc_18 <- rulis_raw %>% 
+  filter(seriescode == "SE.ADT.LITR.ZS") %>% 
+  mutate(value = as.numeric(value)) %>% 
+  dplyr::select(country, value) %>% 
+  rename(rulis_adultliteracy_perc_18 = value)
+# need to subset this with worldbank adult literacy data
+
+# National, WDI data - Poverty headcount ratio at national poverty lines (% of population)
+rulis_belowpovertynational_perc_18 <- rulis_raw %>% 
+  filter(seriescode == "SI.POV.NAHC") %>% 
+  mutate(value = as.numeric(value)) %>% 
+  dplyr::select(country, value) %>% 
+  rename(rulis_belowpovertynational_perc_18 = value)
+
+
+# National, WDI data - Access to electricity (% of population)
+rulis_electricityaccesspop_perc_18 <- rulis_raw %>% 
+  filter(seriescode == "EG.ELC.ACCS.ZS") %>% 
+  mutate(value = as.numeric(value)) %>% 
+  dplyr::select(country, value) %>% 
+  rename(rulis_electricityaccesspop_perc_18 = value)
+
+
+# need to merge with admin
+
+# write csv(s) -- check if worldbank originals have more coverage
+```
+
+###Livestock
+
+*Information*
+
+```{r}
+# make unique map for this section to not overwrite other stuff
+worldmap3 <- worldmap
+
+# overlap raster & polygons
+worldmap3$livestock_mean <- exact_extract(livestock_raw, worldmap3, 'mean')
+worldmap3$livestock_sum <- exact_extract(livestock_raw, worldmap3, 'sum')
+
+# make vector file 
+livestock_calculated <- worldmap3 %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(geounit, livestock_mean, livestock_sum) %>% 
+  rename(country = "geounit",
+         fao_livestock_mean_15 = livestock_mean,
+         fao_livestock_sum_15 = livestock_sum)
+
+# need to merge with admin
+
+# write csv
+
+```
+
+###PEPFAR
+
+*Information*
+
+```{r}
+# summarise
+pepfar_calculated <- pepfar_raw %>% 
+  group_by(country) %>% 
+  summarise(mean15 = mean(fy15, na.rm = TRUE),
+            mean16 = mean(fy16, na.rm = TRUE),
+            mean17 = mean(fy17, na.rm = TRUE)) %>% 
+  mutate(mean_151617 = (mean15+mean16+mean17)/3) %>% 
+  dplyr::select(country, mean_151617) %>% 
+  rename(PEPFAR_mean151617 = mean_151617)
+
+# need to merge with admin
+
+# write csv
+```
+
+###SocialVulnerability
+
+*Information*
+The Global Gridded Relative Deprivation Index (GRDI), Version 1 (GRDIv1) characterizes the levels of multidimensional deprivation and poverty for each 30 arc-second (~1 km) pixel in a raster image, where a value of 100 represents the highest level of deprivation and a value of 0 the lowest. The input data represent six dimensions of deprivation—child dependency ratios, infant mortality rates, a subnational human development index, building footprints per square kilometer, and nighttime lights (both current and recent changes). 
+
+The Subnational Human Development Index (SHDI) attempts to assess human well-being through a combination of three dimensions: education, health, and standard of living. We assumed SHDI as a dimension where lower values imply higher deprivation.
+
+Third, the Subnational Human Development Index (SHDI) attempts to assess human well-being through a combination of “three dimensions: Education, health, and standard of living1 (Smits and Permanyer, 2019)”. Lower SHDIs imply higher deprivation. Fourth, global rural populations are more likely to experience a higher degree of multidimensional poverty when compared to urban populations, other things being equal (Castañeda et al., 2018; Laborde Debucquet and Martin, 2018; Lee and Kind, 2021; UN DESA, 2021; UNDP and OPHI, 2020). Therefore, the ratio of built-up area to non-built up area (BUILT) is considered as a dimension where low values imply higher deprivation. The final two dimensions relate to the intensity of nighttime lights, which is closely associated with anthropogenic activities, economic output, and infrastructure development (Elvidge et al., 2007; Ghosh et al., 2013; Lu et al., 2021; Small et al., 2013).
+
+Component 3: The Subnational Human Development Index (SHDI), Version 4.0 shapefile from the Global Data Lab Subnational Human Development Index (Global Data Lab, 2020) was used. SHDIv4.0 provides data for 162 countries, or 1,779 sub-national regions. Please refer to the SHDI documentation for a list of countries and regions.
+The Gridded global data sets for Gross Domestic Product (GDP) and Human Development Index over 1990-2015, Version 2.0 (HDIv2) were used to gap-fill grid cells that were missing SHDI data. Specifically, the ‘HDI_1990_2015_v2.nc’, February 13, 2020 release file (Kummu et al., 2018, 2020).
+
+```{r}
+# make unique map for this section to not overwrite other stuff
+worldmap4 <- worldmap
+
+# overlap raster & polygons
+worldmap4$socialvulnerability_mean <- exact_extract(socialvulnerability_raw, worldmap4, 'mean')
+
+# make vector file 
+socialvulnerability_calculated <- worldmap4 %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(geounit, socialvulnerability_mean) %>% 
+  rename(country = "geounit",
+         grdi_shdi_mean_1020 = "socialvulnerability_mean")
+```
+
+###ACLED
+
+*Information*
+```{r}
+# summarise
+acled_calculated <- acled_raw %>% 
+  group_by(country) %>% 
+  count() %>% 
+  summarise(acled_politicalviolence_mean = mean(n, na.rm = TRUE))
+
+# need to merge with admin
+
+# write csv
+```
+
+###SEDAC Pop Counts
+
+*Information*
+Gridded Population of the World (GPW), v4. The files for this data set are available as global rasters in GeoTIFF, ASCII, and netCDF-4 format. The ASCII and GeoTIFF data are available at the native 30 arc-second resolution and four lower resolutions: 2.5 arc-minute, 15 arc-minute, 30 arc-minute, and 1 degree. The netCDF-4 files are available at all resolutions except 30 arc-second. The data are stored in WGS84, geographic coordinate system (latitude/longitude).
+
+```{r}
+# make unique map for this section to not overwrite other stuff
+worldmap5 <- worldmap
+
+# overlap raster & polygons
+worldmap5$humpopcount_sum <- exact_extract(humpopcount_raw, worldmap5, 'sum')
+
+# make vector file 
+humpopcount_calculated <- worldmap5 %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(geounit, humpopcount_sum) %>% 
+  rename(country = "geounit",
+         sedac_popcounts_sum_15 = "humpopcount_sum")
+
+
+# need to merge with admin
+
+# write csv
+```
+
+###World Bank - Land Area
+
+*Information*
+```{r}
+# 	Land area (sq. km) (AG.LND.TOTL.K2)
+# summarise
+wb_landarea_calculated <- wb_landarea_raw %>% 
+  clean_names() %>% 
+  dplyr::select(country_name, x2015_yr2015) %>% 
+  rename(country = "country_name",
+         landarea_sqkm_15 = "x2015_yr2015")
+
+# need to merge with admin
+
+# write csv
+```
+
+###World Bank - Gini Index
+
+*Information*
+World Bank, Poverty and Inequality Platform. Data are based on primary household survey data obtained from government statistical agencies and World Bank country departments. Data for high-income economies are mostly from the Luxembourg Income Study database. For more information and methodology, please see pip.worldbank.org.
+
+```{r}
+# Gini index (SI.POV.GINI)
+# summarise
+wb_gini_calculated <- wb_gini_raw %>% 
+  clean_names() %>% 
+  pivot_longer(x1960:x2023, names_to = "year", values_to = "gini_index") %>% 
+  mutate(year = str_sub(year, 2,5),
+         year = as.numeric(year)) %>% 
+  rename(country = "country_name") %>% 
+  group_by(country) %>% 
+  summarise(gini_mean = mean(gini_index, na.rm = TRUE)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% 
+   filter(country != "IDA & IBRD total",
+         country != "IBRD only",
+         country != "High income",
+         country != "Heavily indebted poor countries (HIPC)",
+         country != "Fragile and conflict affected situations",
+         country != "European Union",
+         country != "Europe & Central Asia (excluding high income)",
+         country != "Europe & Central Asia (IDA & IBRD countries)",
+         country != "Europe & Central Asia",
+         country != "East Asia & Pacific (excluding high income)",
+         country != "East Asia & Pacific (IDA & IBRD countries)",
+         country != "East Asia & Pacific",
+         country != "Early-demographic dividend",
+         country != "Arab World",
+         country != "Africa Western and Central",
+         country != "Africa Eastern and Southern",
+         country != "IDA only",
+         country != "IDA blend",
+         country != "IDA total",
+         country != "Late-demographic dividend",
+         country != "Latin America & Caribbean",
+         country != "Latin America & Caribbean (excluding high income)",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)	",
+         country != "Least developed countries: UN classification",
+         country != "Low & middle income",
+         country != "Low income",
+         country != "Lower middle income",
+         country != "Middle East & North Africa",
+         country != "Middle East & North Africa (IDA & IBRD countries)",
+         country != "Middle East & North Africa (excluding high income)",
+         country != "Middle income",
+         country != "Not classified",
+         country != "OECD members",
+         country != "Other small states",
+         country != "Pacific island small states",
+         country != "Post-demographic dividend",
+         country != "Pre-demographic dividend",
+         country != "Small states",
+         country != "South Asia",
+         country != "South Asia (IDA & IBRD)",
+         country != "Sub-Saharan Africa",
+         country != "Sub-Saharan Africa (IDA & IBRD countries)",
+         country != "Sub-Saharan Africa (excluding high income)",
+         country != "Upper middle income",
+         country != "World",
+         country != "Central Europe and the Baltics",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)") 
+
+# need to merge with admin
+
+# write csv
+
+```
+
+###World Bank - Adult literacy rate
+
+*Information*
+
+```{r}
+# Literacy rate, adult total (% of people ages 15 and above) (SE.ADT.LITR.ZS)
+# summarise
+wb_adultliteracy_calculated <- wb_adultliteracy_raw %>% 
+  clean_names() %>% 
+  pivot_longer(x2010_yr2010:x2015_yr2015, names_to = "year", values_to = "adultliteracy_rate") %>% 
+  mutate(year = str_sub(year, 2,5),
+         year = as.numeric(year),
+         adultliteracy_rate = as.numeric(adultliteracy_rate)) %>% 
+  rename(country = "country_name") %>% 
+  group_by(country) %>% 
+  summarise(adultliteracy_rate_mean1015 = mean(adultliteracy_rate, na.rm = TRUE)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% 
+   filter(country != "IDA & IBRD total",
+         country != "IBRD only",
+         country != "High income",
+         country != "Heavily indebted poor countries (HIPC)",
+         country != "Fragile and conflict affected situations",
+         country != "European Union",
+         country != "Europe & Central Asia (excluding high income)",
+         country != "Europe & Central Asia (IDA & IBRD countries)",
+         country != "Europe & Central Asia",
+         country != "East Asia & Pacific (excluding high income)",
+         country != "East Asia & Pacific (IDA & IBRD countries)",
+         country != "East Asia & Pacific",
+         country != "Early-demographic dividend",
+         country != "Arab World",
+         country != "Africa Western and Central",
+         country != "Africa Eastern and Southern",
+         country != "IDA only",
+         country != "IDA blend",
+         country != "IDA total",
+         country != "Late-demographic dividend",
+         country != "Latin America & Caribbean",
+         country != "Latin America & Caribbean (excluding high income)",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)	",
+         country != "Least developed countries: UN classification",
+         country != "Low & middle income",
+         country != "Low income",
+         country != "Lower middle income",
+         country != "Middle East & North Africa",
+         country != "Middle East & North Africa (IDA & IBRD countries)",
+         country != "Middle East & North Africa (excluding high income)",
+         country != "Middle income",
+         country != "Not classified",
+         country != "OECD members",
+         country != "Other small states",
+         country != "Pacific island small states",
+         country != "Post-demographic dividend",
+         country != "Pre-demographic dividend",
+         country != "Small states",
+         country != "South Asia",
+         country != "South Asia (IDA & IBRD)",
+         country != "Sub-Saharan Africa",
+         country != "Sub-Saharan Africa (IDA & IBRD countries)",
+         country != "Sub-Saharan Africa (excluding high income)",
+         country != "Upper middle income",
+         country != "World",
+         country != "Central Europe and the Baltics",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)") %>% 
+  filter(country != "")  # not sure why there was a blank cell for country %>% #
+```
+
+###World Bank - Poverty at national poverty lines
+
+*Information*
+```{r}
+# Poverty headcount ratio at national poverty lines (% of population) (SI.POV.NAHC)
+# summarise
+wb_poverty_belownational_calculated <- wb_poverty_belownational_raw %>% 
+  clean_names() %>% 
+  pivot_longer(x2010_yr2010:x2015_yr2015, names_to = "year", values_to = "poverty_belownational") %>% 
+  mutate(year = str_sub(year, 2,5),
+         year = as.numeric(year),
+         poverty_belownational = as.numeric(poverty_belownational)) %>% 
+  rename(country = "country_name") %>% 
+  group_by(country) %>% 
+  summarise(poverty_belownational_mean1015 = mean(poverty_belownational, na.rm = TRUE)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% 
+   filter(country != "IDA & IBRD total",
+         country != "IBRD only",
+         country != "High income",
+         country != "Heavily indebted poor countries (HIPC)",
+         country != "Fragile and conflict affected situations",
+         country != "European Union",
+         country != "Europe & Central Asia (excluding high income)",
+         country != "Europe & Central Asia (IDA & IBRD countries)",
+         country != "Europe & Central Asia",
+         country != "East Asia & Pacific (excluding high income)",
+         country != "East Asia & Pacific (IDA & IBRD countries)",
+         country != "East Asia & Pacific",
+         country != "Early-demographic dividend",
+         country != "Arab World",
+         country != "Africa Western and Central",
+         country != "Africa Eastern and Southern",
+         country != "IDA only",
+         country != "IDA blend",
+         country != "IDA total",
+         country != "Late-demographic dividend",
+         country != "Latin America & Caribbean",
+         country != "Latin America & Caribbean (excluding high income)",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)	",
+         country != "Least developed countries: UN classification",
+         country != "Low & middle income",
+         country != "Low income",
+         country != "Lower middle income",
+         country != "Middle East & North Africa",
+         country != "Middle East & North Africa (IDA & IBRD countries)",
+         country != "Middle East & North Africa (excluding high income)",
+         country != "Middle income",
+         country != "Not classified",
+         country != "OECD members",
+         country != "Other small states",
+         country != "Pacific island small states",
+         country != "Post-demographic dividend",
+         country != "Pre-demographic dividend",
+         country != "Small states",
+         country != "South Asia",
+         country != "South Asia (IDA & IBRD)",
+         country != "Sub-Saharan Africa",
+         country != "Sub-Saharan Africa (IDA & IBRD countries)",
+         country != "Sub-Saharan Africa (excluding high income)",
+         country != "Upper middle income",
+         country != "World",
+         country != "Central Europe and the Baltics",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)") %>% 
+  filter(country != "") 
+
+```
+
+###World Bank - Health expenditure (% of GDP)
+
+*Information*
+
+```{r}
+
+# Current health expenditure (% of GDP) (SH.XPD.CHEX.GD.ZS)
+# summarise
+wb_healthexpenditures_calculated <- wb_healthexpenditures_raw  %>% 
+  clean_names() %>% 
+  pivot_longer(x2010_yr2010:x2015_yr2015, names_to = "year", values_to = "healthexpenditures_percent") %>% 
+  mutate(year = str_sub(year, 2,5),
+         year = as.numeric(year),
+         healthexpenditures_percent = as.numeric(healthexpenditures_percent)) %>% 
+  rename(country = "country_name") %>% 
+  group_by(country) %>% 
+  summarise(healthexpenditures_percent_mean1015 = mean(healthexpenditures_percent, na.rm = TRUE)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .))  %>%  
+   filter(country != "IDA & IBRD total",
+         country != "IBRD only",
+         country != "High income",
+         country != "Heavily indebted poor countries (HIPC)",
+         country != "Fragile and conflict affected situations",
+         country != "European Union",
+         country != "Europe & Central Asia (excluding high income)",
+         country != "Europe & Central Asia (IDA & IBRD countries)",
+         country != "Europe & Central Asia",
+         country != "East Asia & Pacific (excluding high income)",
+         country != "East Asia & Pacific (IDA & IBRD countries)",
+         country != "East Asia & Pacific",
+         country != "Early-demographic dividend",
+         country != "Arab World",
+         country != "Africa Western and Central",
+         country != "Africa Eastern and Southern",
+         country != "IDA only",
+         country != "IDA blend",
+         country != "IDA total",
+         country != "Late-demographic dividend",
+         country != "Latin America & Caribbean",
+         country != "Latin America & Caribbean (excluding high income)",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)	",
+         country != "Least developed countries: UN classification",
+         country != "Low & middle income",
+         country != "Low income",
+         country != "Lower middle income",
+         country != "Middle East & North Africa",
+         country != "Middle East & North Africa (IDA & IBRD countries)",
+         country != "Middle East & North Africa (excluding high income)",
+         country != "Middle income",
+         country != "Not classified",
+         country != "OECD members",
+         country != "Other small states",
+         country != "Pacific island small states",
+         country != "Post-demographic dividend",
+         country != "Pre-demographic dividend",
+         country != "Small states",
+         country != "South Asia",
+         country != "South Asia (IDA & IBRD)",
+         country != "Sub-Saharan Africa",
+         country != "Sub-Saharan Africa (IDA & IBRD countries)",
+         country != "Sub-Saharan Africa (excluding high income)",
+         country != "Upper middle income",
+         country != "World",
+         country != "Central Europe and the Baltics",
+         country != "Latin America & the Caribbean (IDA & IBRD countries)") %>% 
+  filter(country != "") 
+
+```
+
+##Step 3. Check for same country names
+
+As you can see, there is varying levels of reporting. For the purposes of creating the original global trait matrix, I will use the country list from rnatural world because 1) makes visualization of covariate coverage easier, 2) has more countries than necessary but that will be easier to filter out later rather than start with a smaller list.
+
+```{r}
+## check length of each file
+dim(ecoregion_calculated) # 251*
+dim(koepp_mode_calculated) # 243
+dim(vegdisim_calculated) # 258*
+dim(rulis_employag_perc_18) # 175
+dim(rulis_adultliteracy_perc_18) # 75
+dim(rulis_belowpovertynational_perc_18) # 64
+dim(rulis_electricityaccesspop_perc_18) # 200
+dim(livestock_calculated) # 258*
+dim(pepfar_calculated) # 57
+dim(socialvulnerability_calculated) # 258*
+dim(acled_calculated) # 130
+dim(humpopcount_calculated) # 258*
+dim(wb_landarea_calculated) # 222
+dim(wb_gini_calculated) # 220
+dim(wb_adultliteracy_calculated) # 222
+dim(wb_poverty_belownational_calculated) # 222
+dim(wb_healthexpenditures_calculated) # 222
+
+```
+
+Start with rnatural list of countries
+```{r}
+worldmap_list <- worldmap %>% 
+  dplyr::select(admin, iso_a3) %>% 
+  st_drop_geometry() %>% # 258
+  mutate(iso_a3 = case_when(iso_a3 == "-99" ~ admin, # how to deal with small countries without iso_a3
+                            TRUE ~ iso_a3))
+
+```
+
+
+###Ecoregion
+```{r}
+## see which countries don't have iso3c codes
+countryname(sourcevar = ecoregion_calculated$admin, destination = "iso3c")
+#Akrotiri Sovereign Base Area, Baykonur Cosmodrome, Bir Tawil, Clipperton Island, Dhekelia Sovereign Base Area, Indian Ocean Territories, Saint Martin, Siachen Glacier, Southern Patagonian Ice Field, Spratly Islands,  Kosovo, Somaliland
+# ^^ so these countries are a lot of small islands, not too worried about finding their iso3c
+
+
+## fix the country name mismatch
+ecoregion_calculated_iso3c <- ecoregion_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = admin, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ admin)) %>% 
+  rename(ecoregions_total = n)
+
+## now merge covariate data onto worldmap list
+ecoregion_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(ecoregion_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin.x, iso_a3, ecoregions_total) %>% 
+  rename(admin = admin.x) %>% 
+  filter(!duplicated(admin)) %>% 
+  mutate(ecoregions_total = case_when(admin == "France" ~ 19,
+                                      admin == "Saint Martin" ~ 1,
+                                      admin == "Norway" ~ 8,
+                                      admin == "US Naval Base Guantanamo Bay" ~ 2,
+                                      admin == "Brazilian Island" ~ 3,
+                                      admin == "Northern Cyprus" ~ 1,
+                                      admin == "Cyprus No Mans Area" ~ 1,
+                                      admin == "Somaliland" ~ 4,
+                                      admin == "Kosovo" ~ 3,
+                                      admin == "Bir Tawil" ~ 1,
+                           TRUE ~ ecoregions_total)) 
+
+# ecoregion_calculated %>% filter(admin == "Ashmore and Cartier Islands") # the remaining NAs don't have values probably because they are small islands or not recognized territories 
+```
+
+###Koeppen-Geiger
+```{r}
+countryname(sourcevar = koepp_mode_calculated$admin, destination = "iso3c")
+# Ashmore and Cartier Islands, Indian Ocean Territories, Saint Martin, Siachen Glacier, Kosovo
+
+
+## fix the country name mismatch
+koepp_mode_calculated_iso3c <- koepp_mode_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = admin, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ admin)) 
+
+## now merge covariate data onto worldmap list
+koepp_mode_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(koepp_mode_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin.x, iso_a3,koeppen_climatezone_ID,  koeppen_climatezone_name) %>% 
+  rename(admin = admin.x) %>% 
+  filter(!duplicated(admin)) %>% 
+  mutate(koeppen_climatezone_name = case_when(admin == "France" ~ "Cfb",
+                                              admin == "Norway" ~ "Dfc",
+                                              admin == "Saint Martin" ~ "Ocean",
+                                              TRUE ~ koeppen_climatezone_name),
+         koeppen_climatezone_ID = case_when(admin == "France" ~ 10,
+                                              admin == "Norway" ~ 20,
+                                              admin == "Saint Martin" ~ 32,
+                                             TRUE ~ koeppen_climatezone_ID))
+
+koepp_mode_calculated %>% filter(admin == "US Naval Base Guantanamo Bay")
+```
+
+###Vegetation dissimilarity
+```{r}
+countryname(sourcevar = vegdisim_calculated$country , destination = "iso3c")
+#Akrotiri Sovereign Base Area, Ashmore and Cartier Islands, Bajo Nuevo Bank (Petrel Is.), Baykonur Cosmodrome, Bir Tawil, Clipperton Island, Coral Sea Islands, Dhekelia Sovereign Base Area, Indian Ocean Territories, Saint Martin, Scarborough Reef, Serranilla Bank, Siachen Glacier, Southern Patagonian Ice Field, Spratly Islands, Kosovo, Somaliland
+
+## fix the country name mismatch
+vegdisim_calculated_iso3c <- vegdisim_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+vegdisim_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(vegdisim_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, vegdissimilar_mean_1020) %>% 
+  #rename(admin = admin.x) %>% 
+  filter(!duplicated(admin)) %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(vegdissimilar_mean_1020 = case_when(admin == "France" ~ 3.210835,
+                                              admin == "Norway" ~ 3.438313,
+                                              admin == "Saint Martin" ~ 5.586051,
+                                              admin == "US Naval Base Guantanamo Bay" ~ 3.627963,
+                                              admin == "Brazilian Island" ~ 3.104635,
+                                             admin == "Northern Cyprus" ~ 3.252746,
+                                             admin == "Cyprus No Mans Area" ~ 4.035641,
+                                              TRUE ~ vegdissimilar_mean_1020)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) # convert NaN to NAs
+
+
+```
+
+###Rulis
+
+Employed in Ag
+```{r}
+## rulis_employag_perc_18
+countryname(sourcevar = rulis_employag_perc_18$country , destination = "iso3c")
+# Channel Islands
+
+## fix the country name mismatch
+rulis_employag_perc_18_iso3c <- rulis_employag_perc_18 %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+rulis_employag_perc_18_iso3c_clean <- worldmap_list %>% 
+  left_join(rulis_employag_perc_18_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, rulis_employag_perc_18) %>% 
+  #rename(admin = admin.x) %>% 
+  filter(!duplicated(admin))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them - a lot of countries don't have this stat
+  mutate(rulis_employag_perc_18 = case_when(admin == "France" ~ 2.5,
+                                              admin == "Norway" ~ 2.11,
+                                              TRUE ~ rulis_employag_perc_18))  %>% 
+  filter(!duplicated(iso_a3))  
+
+
+```
+
+Adult Literacy
+```{r}
+## rulis_adultliteracy_perc_18
+countryname(sourcevar = rulis_adultliteracy_perc_18$country , destination = "iso3c")
+
+## fix the country name mismatch
+rulis_adultliteracy_perc_18_iso3c <- rulis_adultliteracy_perc_18 %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+rulis_adultliteracy_perc_18_iso3c_clean <- worldmap_list %>% 
+  left_join(rulis_adultliteracy_perc_18_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, rulis_adultliteracy_perc_18) %>% 
+  filter(!duplicated(admin)) # a lot of missing values in this dataset
+
+
+```
+
+Poverty below national line
+```{r}
+## rulis_belowpovertynational_perc_18
+countryname(sourcevar = rulis_belowpovertynational_perc_18$country , destination = "iso3c")
+
+## fix the country name mismatch
+rulis_belowpovertynational_perc_18_iso3c <- rulis_belowpovertynational_perc_18 %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+rulis_belowpovertynational_perc_18_iso3c_clean <- worldmap_list %>% 
+  left_join(rulis_belowpovertynational_perc_18_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, rulis_belowpovertynational_perc_18) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them - a lot of countries don't have this stat
+  mutate(rulis_belowpovertynational_perc_18 = case_when(admin == "France" ~ 13.6,
+                                              admin == "Norway" ~ 12.7,
+                                              TRUE ~ rulis_belowpovertynational_perc_18)) 
+
+```
+
+
+Access to electricity
+```{r}
+## rulis_electricityaccesspop_perc_18
+countryname(sourcevar = rulis_electricityaccesspop_perc_18$country , destination = "iso3c")
+
+
+## fix the country name mismatch
+rulis_electricityaccesspop_perc_18_iso3c <- rulis_electricityaccesspop_perc_18 %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+rulis_electricityaccesspop_perc_18_iso3c_clean <- worldmap_list %>% 
+  left_join(rulis_electricityaccesspop_perc_18_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, rulis_electricityaccesspop_perc_18) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them - a lot of countries don't have this stat
+  mutate(rulis_electricityaccesspop_perc_18 = case_when(admin == "France" ~ 100,
+                                              admin == "Norway" ~ 100,
+                                              TRUE ~ rulis_electricityaccesspop_perc_18)) 
+
+```
+
+
+###Livestock
+```{r}
+countryname(sourcevar = livestock_calculated$country , destination = "iso3c")
+#Akrotiri Sovereign Base Area, Ashmore and Cartier Islands, Bajo Nuevo Bank (Petrel Is.), Baykonur Cosmodrome, Bir Tawil, Clipperton Island, Coral Sea Islands, Dhekelia Sovereign Base Area, Indian Ocean Territories, Saint Martin, Scarborough Reef, Serranilla Bank, Siachen Glacier, Southern Patagonian Ice Field, Spratly Islands, Kosovo, Somaliland
+
+
+## fix the country name mismatch
+livestock_calculated_iso3c <- livestock_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+livestock_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(livestock_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, fao_livestock_mean_15, fao_livestock_sum_15) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(fao_livestock_mean_15 = case_when(admin == "France" ~ 1894.514,
+                                              admin == "Norway" ~ 79.85907,
+                                              admin == "Saint Martin" ~ NaN,
+                                              admin == "US Naval Base Guantanamo Bay" ~ 783.408,
+                                              admin == "Brazilian Island" ~ 3654.171,
+                                             admin == "Northern Cyprus" ~ 417.0792,
+                                             admin == "Cyprus No Mans Area" ~ 773.4017,
+                                              TRUE ~ fao_livestock_mean_15),
+         fao_livestock_sum_15 = case_when(admin == "France" ~ 19333700,
+                                              admin == "Norway" ~ 807116.6,
+                                              admin == "Saint Martin" ~ 0,
+                                              admin == "US Naval Base Guantanamo Bay" ~ 208.6036,
+                                              admin == "Brazilian Island" ~ 139.2224	,
+                                             admin == "Northern Cyprus" ~ 17302.84,
+                                             admin == "Cyprus No Mans Area" ~ 3599.363,
+                                              TRUE ~ fao_livestock_sum_15)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) # convert NaN to NAs
+
+```
+
+###PEPFAR (complete example follow this)
+```{r}
+## see which countries don't have iso3c codes
+countryname(sourcevar = pepfar_calculated$country, destination = "iso3c")
+
+## fix the country name mismatch
+pepfar_calculated_iso3c <- pepfar_calculated %>% 
+  # change the country names that were not matched
+  mutate(country = case_when(country == "DominicanRepublic" ~ "Dominican Republic",
+                             country == "SaintLucia" ~ "Saint Lucia",
+                             country == "SouthAfrica" ~ "South Africa",
+                             TRUE ~ country)) %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) 
+
+## now merge covariate data onto worldmap list
+pepfar_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(pepfar_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, PEPFAR_mean151617)
+
+```
+
+###SocialVulernability
+```{r}
+
+countryname(sourcevar = socialvulnerability_calculated$country, destination = "iso3c")
+#Akrotiri Sovereign Base Area, Ashmore and Cartier Islands, Bajo Nuevo Bank (Petrel Is.), Baykonur Cosmodrome, Bir Tawil, Clipperton Island, Coral Sea Islands, Dhekelia Sovereign Base Area, Indian Ocean Territories, Saint Martin, Scarborough Reef, Serranilla Bank, Siachen Glacier, Southern Patagonian Ice Field, Spratly Islands, Kosovo, Somaliland
+
+
+## fix the country name mismatch
+socialvulnerability_calculated_iso3c <- socialvulnerability_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+socialvulnerability_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(socialvulnerability_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, grdi_shdi_mean_1020) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(grdi_shdi_mean_1020 = case_when(admin == "France" ~ 11.69895,
+                                              admin == "Norway" ~ 1.217893,
+                                              admin == "Saint Martin" ~ NaN,
+                                              admin == "US Naval Base Guantanamo Bay" ~ 34.90982	,
+                                              admin == "Brazilian Island" ~ 32.20388,
+                                             admin == "Northern Cyprus" ~ 40.93644,
+                                             admin == "Cyprus No Mans Area" ~ 14.34375,
+                                              TRUE ~ grdi_shdi_mean_1020)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) # convert NaN to NAs
+```
+
+
+###ACLED
+```{r}
+
+countryname(sourcevar = acled_calculated$country, destination = "iso3c")
+# Kosovo
+
+## fix the country name mismatch
+acled_calculated_iso3c <- acled_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+acled_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(acled_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, acled_politicalviolence_mean) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(acled_politicalviolence_mean = case_when(admin == "France" ~ 3,
+                                              TRUE ~ acled_politicalviolence_mean)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) # convert NaN to NAs
+
+
+```
+
+###SEDAC Pop Count
+```{r}
+
+countryname(sourcevar = humpopcount_calculated$country, destination = "iso3c")
+#Akrotiri Sovereign Base Area, Ashmore and Cartier Islands, Bajo Nuevo Bank (Petrel Is.), Baykonur Cosmodrome, Bir Tawil, Clipperton Island, Coral Sea Islands, Dhekelia Sovereign Base Area, Indian Ocean Territories, Saint Martin, Scarborough Reef, Serranilla Bank, Siachen Glacier, Southern Patagonian Ice Field, Spratly Islands, Kosovo, Somaliland
+
+
+## fix the country name mismatch
+humpopcount_calculated_iso3c <- humpopcount_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+humpopcount_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(humpopcount_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, sedac_popcounts_sum_15) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(sedac_popcounts_sum_15 = case_when(admin == "France" ~ 65904172,
+                                            admin == "Norway" ~ 4517594, 
+                                            admin == "Saint Martin" ~ 37031.07,
+                                            admin == "US Naval Base Guantanamo Bay" ~ 1001.899,
+                                            admin == "Brazilian Island" ~ 37.52561,
+                                            admin == "Northern Cyprus" ~ 343653,
+                                            admin == "Cyprus No Mans Area" ~ 101823.5, 
+                                              TRUE ~ sedac_popcounts_sum_15)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) # convert NaN to NAs
+
+
+```
+
+###World Bank 
+
+Land area
+```{r}
+
+countryname(sourcevar = wb_landarea_calculated$country, destination = "iso3c")
+# Channel Islands, Kosovo ", " ", Data from database: World Development Indicators, Last Updated: 09/19/2024" (NEED TO FIX THIS)
+
+## fix the country name mismatch
+wb_landarea_calculated_iso3c <- wb_landarea_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+wb_landarea_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(wb_landarea_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, landarea_sqkm_15) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(landarea_sqkm_15 = as.numeric(landarea_sqkm_15),
+         landarea_sqkm_15 = case_when(admin == "France" ~ 547557,
+                                      admin == "Norway" ~ 365190.7,
+                                      admin == "Kosovo" ~ NA, 
+                                      TRUE ~ landarea_sqkm_15)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% # convert NaN to NAs
+  rename(wb_landarea_sqkm_15 = landarea_sqkm_15) 
+
+
+```
+
+Gini Index
+```{r}
+countryname(sourcevar = wb_gini_calculated$country, destination = "iso3c")
+# Caribbean small states, Euro area, North America, Channel Islands, Kosovo
+
+## fix the country name mismatch
+wb_gini_calculated_iso3c <- wb_gini_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+wb_gini_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(wb_gini_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, gini_mean) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(
+         gini_mean = case_when(admin == "France" ~ 32.3871,
+                                      admin == "Norway" ~ 27.03636, 
+                                      TRUE ~ gini_mean)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% # convert NaN to NAs
+  rename(wb_gini_mean = gini_mean) 
+
+
+
+```
+
+###World Bank 
+
+Literacy
+```{r}
+countryname(sourcevar = wb_adultliteracy_calculated$country, destination = "iso3c")
+# Caribbean small states, Data from database: World Development Indicators, Euro area, Last Updated: 09/19/2024, North America, Channel Islands, Kosovo
+
+## fix the country name mismatch
+wb_adultliteracy_calculated_iso3c <- wb_adultliteracy_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+wb_adultliteracy_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(wb_adultliteracy_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, adultliteracy_rate_mean1015) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # these countries values didn't merge so manually looking them up *on World Bank* and adding them, some I made the assumption there was high literacy rate and imputed 99.9 to help with coverage of this covariate for future analysis
+  mutate(adultliteracy_rate_mean1015 = case_when(admin == "France" ~ 32.3871,
+                                      admin == "Norway" ~ 27.03636,
+                                      admin == "American Samoa" ~ 99.03663,
+                                          admin == "Australia" ~ 99.9,
+                                          admin == "Belgium" ~ 99.9,
+                                          admin == "Croatia" ~ 99.45,
+                                          admin == "Denmark" ~ 99.9,
+                                          admin == "Ethiopia" ~ 51.77118, 
+                                          admin == "Finland" ~ 99.9, 
+                                          admin == "Guatemala" ~ 80.33402,
+                                          admin == "Guinea-Bissau" ~ 49.74058, 
+                                          admin == "Guyana" ~ 87.83487, 
+                                          admin == "Haiti" ~ 61.69135, 
+                                          admin == "Iceland" ~ 99.9, 
+                                          admin == "Ireland" ~ 99.9, 
+                                          admin == "Japan" ~ 99.9, 
+                                          admin == "Liberia" ~ 48.30136,
+                                          admin == "Luxembourg" ~ 99.9, 
+                                          admin == "Monaco" ~ 99.9, 
+                                          admin == "Myanmar" ~ 82.31057,
+                                          admin == "Netherlands" ~ 99.9, 
+                                          admin == "New Zealand" ~ 99.9, 
+                                          admin == "Norway" ~ 99.9, 
+                                          admin == "Poland" ~ 99.8, 
+                                          admin == "Somalia" ~ 41.025, 
+                                          admin == "Sweden" ~ 99.9,
+                                          admin == "Switzerland" ~ 99.9, 
+                                          admin == "United Arab Emirates" ~ 98.06476, 
+                                          admin == "United Republic of Tanzania" ~ 76.45213,
+                                          admin == "United States of America" ~ 99.9, 
+                                      TRUE ~ adultliteracy_rate_mean1015)) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% # convert NaN to NAs
+  rename(wb_adultliteracy_rate_mean1015 = adultliteracy_rate_mean1015) 
+                                            
+
+       
+```
+
+###World Bank
+
+Poverty
+
+```{r}
+countryname(sourcevar = wb_poverty_belownational_calculated$country, destination = "iso3c")
+# Caribbean small states, Data from database: World Development Indicators, Euro area, Last Updated: 09/19/2024, North America, Channel Islands, Kosovo
+
+
+## fix the country name mismatch
+wb_poverty_belownational_calculated_iso3c <- wb_poverty_belownational_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+## now merge covariate data onto worldmap list
+wb_poverty_belownational_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(wb_poverty_belownational_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, poverty_belownational_mean1015) %>% 
+  filter(!duplicated(iso_a3))  %>% 
+  # went to worldbank to pull down most recent year (MAKE NOTE OF THIS FOR METHODS)
+  mutate(poverty_belownational_mean1015 = case_when(admin == "Angola" ~ 32.30, # 2018
+                                                 admin == "Argentina" ~ 39.29, # 202
+                                                 admin == "Armenia" ~ 24.8, #2022
+                                                 admin == "Australia" ~ 13.40,# 2020
+                                                 admin == "Bangladesh" ~ 18.70, # 2022
+                                                 admin == "Bhutan" ~ 12.40, # 2022
+                                                 admin == "Burkina Faso" ~ 43.20, # 2021
+                                                 admin == "Central African Republic" ~ 68.80, #2021
+                                                 admin == "Chad" ~ 42.30, # 2018
+                                                 admin == "Colombia" ~ 36.60, # 2022
+                                                 admin == "Denmark" ~ 12.40, # 2021
+                                                 admin == "Djibouti" ~ 21.10, # 2017
+                                                 admin == "Dominican Republic" ~ 23.90, # 2021
+                                                 admin == "Egypt" ~ 29.70, # 2019
+                                                 admin == "El Salvador" ~ 26.60, #2022
+                                                 admin == "Fiji" ~ 24.10, # 2019
+                                                 admin == "France" ~ 15.60, # 2021
+                                                 admin == "Gabon" ~ 33.40, # 2017
+                                                 admin == "Germany" ~ 14.80, # 2021
+                                                 admin == "Grenada" ~ 25.00, # 2018
+                                                 admin == "Guinea" ~ 43.70, # 2018
+                                                 admin == "Iceland" ~ 8.80, # 2017
+                                                 admin == "Ireland" ~ 14.00, # 2021
+                                                 admin == "Jordan" ~ 15.70, # 2018
+                                                 admin == "Kazakhstan" ~ 5.20, # 2022
+                                                 admin == "Kiribati" ~ 21.90, # 2020
+                                                 admin == "Lesotho" ~ 49.70,  # 2017
+                                                 admin == "Malaysia" ~ 6.20, # 2021
+                                                 admin == "Maldives" ~ 5.40, # 2019
+                                                 admin == "Mexico" ~ 36.30, # 2022
+                                                 admin == "Mongolia" ~ 27.80, # 2020
+                                                 admin == "Niger" ~ 40.80, # 2018
+                                                 admin == "Nigeria" ~ 40.10, # 2018
+                                                 admin == "Norway" ~ 12.20, # 2021
+                                                 admin == "Poland" ~ 11.80, # 2022
+                                                 admin == "Somalia" ~ 54.40, # 2022
+                                                 admin == "Togo" ~ 45.50, # 2018 
+                                                 admin == "Turkey" ~ 14.40, # 2020
+                                                 admin == "Ukraine" ~ 1.60, # 2020
+                                                 admin == "United Kingdom" ~ 18.60, # 2017
+                                                 admin == "Uruguay" ~ 9.90, # 2022
+                                                 admin == "Uzbekistan" ~ 14.10, # 2013
+                                                 admin == "Vietnam" ~ 4.80)) %>%  # 2020
+  mutate_all(~ifelse(is.nan(.), NA, .)) %>% # convert NaN to NAs
+  rename(wb_poverty_belownational_mean1015 = poverty_belownational_mean1015) 
+```
+
+
+###World Bank
+
+Health expenditure
+```{r}
+countryname(sourcevar = wb_healthexpenditures_calculated$country, destination = "iso3c")
+# Caribbean small states, Data from database: World Development Indicators, Euro area, Last Updated: 09/19/2024, North America Channel Islands, Kosovo
+
+
+## fix the country name mismatch
+wb_healthexpenditures_calculated_iso3c <- wb_healthexpenditures_calculated %>% 
+  mutate(iso_a3 = countryname(sourcevar = country, destination = "iso3c")) %>% 
+  mutate(iso_a3 = case_when(!is.na(iso_a3) ~ iso_a3, # kind of a funny way of dealing with this but it'll do for now
+                            TRUE ~ country)) 
+
+
+## now merge covariate data onto worldmap list
+wb_healthexpenditures_calculated_iso3c_clean <- worldmap_list %>% 
+  left_join(wb_healthexpenditures_calculated_iso3c, by = "iso_a3") %>% 
+  dplyr::select(admin, iso_a3, healthexpenditures_percent_mean1015) %>% 
+  filter(!duplicated(iso_a3)) %>%  
+  # these countries values didn't merge so manually looking them up and adding them
+  mutate(healthexpenditures_percent_mean1015 = case_when(admin == "France" ~ 11.34859	,
+                                      admin == "Norway" ~ 9.088333, 
+                                      TRUE ~ healthexpenditures_percent_mean1015)) %>%
+  rename(wb_healthexpenditures_percent_mean1015 = healthexpenditures_percent_mean1015) %>% 
+  mutate_all(~ifelse(is.nan(.), NA, .)) # convert NaN to NAs
+
+
+```
+
+
+
+##Step 4. Check to make sure they're all the same length
+
+```{r}
+## check length of each file
+# pre-step 3 and after step 4
+dim(ecoregion_calculated_iso3c_clean) # 251* --> 258
+dim(koepp_mode_calculated_iso3c_clean) # 243 --> 258
+dim(vegdisim_calculated_iso3c_clean) # 258* --> 258
+dim(rulis_employag_perc_18_iso3c_clean) # 175 --> 258
+dim(rulis_adultliteracy_perc_18_iso3c_clean) # 75 --> 258
+dim(rulis_belowpovertynational_perc_18_iso3c_clean) # 64 --> 258
+dim(rulis_electricityaccesspop_perc_18_iso3c_clean) # 200 --> 258
+dim(livestock_calculated_iso3c_clean) # 258* --> 258
+dim(pepfar_calculated_iso3c_clean) # 57 --> 258
+dim(socialvulnerability_calculated_iso3c_clean) # 258* --> 258
+dim(acled_calculated_iso3c_clean) # 130 --> 258
+dim(humpopcount_calculated_iso3c_clean) # 258* --> 258
+dim(wb_landarea_calculated_iso3c_clean) # 222 --> 258
+dim(wb_gini_calculated_iso3c_clean) # 220 --> 258
+dim(wb_adultliteracy_calculated_iso3c_clean) # 222. --> 258
+dim(wb_poverty_belownational_calculated_iso3c_clean) # 222 --> 258
+dim(wb_healthexpenditures_calculated_iso3c_clean) # 222 --> 258
+```
+
+##Step 5. Write individual csv
+
+```{r}
+# write.csv(ecoregion_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/ecoregion_calculated_iso3c_clean.csv")
+# write.csv(koepp_mode_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/koepp_mode_calculated_iso3c_clean.csv")
+# write.csv(vegdisim_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/vegdisim_calculated_iso3c_clean.csv")
+# write.csv(rulis_employag_perc_18_iso3c_clean, file = "trait_matrix/clean/individual_covariates/rulis_employag_perc_18_iso3c_clean.csv")
+# write.csv(rulis_adultliteracy_perc_18_iso3c_clean, file = "trait_matrix/clean/individual_covariates/rulis_adultliteracy_perc_18_iso3c_clean.csv")
+# write.csv(rulis_belowpovertynational_perc_18_iso3c_clean, file = "trait_matrix/clean/individual_covariates/rulis_belowpovertynational_perc_18_iso3c_clean.csv")
+# write.csv(rulis_electricityaccesspop_perc_18_iso3c_clean, file = "trait_matrix/clean/individual_covariates/rulis_electricityaccesspop_perc_18_iso3c_clean.csv")
+# write.csv(livestock_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/livestock_calculated_iso3c_clean.csv")
+# write.csv(pepfar_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/pepfar_calculated_iso3c_clean.csv")
+# write.csv(socialvulnerability_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/socialvulnerability_calculated_iso3c_clean.csv")
+# write.csv(acled_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/acled_calculated_iso3c_clean.csv")
+# write.csv(humpopcount_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/humpopcount_calculated_iso3c_clean.csv")
+# write.csv(wb_landarea_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/wb_landarea_calculated_iso3c_clean.csv")
+# write.csv(wb_gini_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/wb_gini_calculated_iso3c_clean.csv")
+# write.csv(wb_adultliteracy_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/wb_adultliteracy_calculated_iso3c_clean.csv")
+# write.csv(wb_poverty_belownational_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/wb_poverty_belownational_calculated_iso3c_clean.csv")
+# write.csv(wb_healthexpenditures_calculated_iso3c_clean, file = "trait_matrix/clean/individual_covariates/wb_healthexpenditures_calculated_iso3c_clean.csv")
+```
+
+
+##Step 6. Merge individual covariates into one
+
+```{r}
+global_trait_matrix <- worldmap_list %>%
+  rename(temp_admin = admin) %>% # rename this so its easier to filter for later
+  left_join(ecoregion_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(koepp_mode_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(vegdisim_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(rulis_employag_perc_18_iso3c_clean, by = "iso_a3") %>% 
+  left_join(rulis_adultliteracy_perc_18_iso3c_clean, by = "iso_a3") %>% 
+  left_join(rulis_belowpovertynational_perc_18_iso3c_clean, by = "iso_a3") %>% 
+  left_join(rulis_electricityaccesspop_perc_18_iso3c_clean, by = "iso_a3") %>% 
+  left_join(livestock_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(pepfar_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(socialvulnerability_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(acled_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(humpopcount_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(wb_landarea_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(wb_gini_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(wb_adultliteracy_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(wb_poverty_belownational_calculated_iso3c_clean, by = "iso_a3") %>% 
+  left_join(wb_healthexpenditures_calculated_iso3c_clean, by = "iso_a3") %>% 
+  dplyr::select(!starts_with("admin")) %>% # get rid of merged admin columns
+  rename(admin = temp_admin)
+
+```
+
+##Step 7. Make csv for final global trait matrix
+```{r}
+#write.csv(global_trait_matrix, file = "trait_matrix/clean/global_trait_matrix_20240920.csv")
+```
+
