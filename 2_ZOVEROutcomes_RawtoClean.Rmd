@@ -19,7 +19,7 @@ To transform raw data from ZOVER into somewhat cleaned csv to further filter int
 8) Write final csv of clean-ish tick-viruses
 
 
-###Final CSV: tick_viruses_clean_20240921.csv
+###Final CSV: zover_all_viruses_20240921.csv
 ^^ this will be filtered to final outcomes for BRT analysis
 
 *Note: The ZOVER data is freely available under the Creative Commons Attribution-NonCommercial (CC BY-NC) license version 4.0 for personal and public non-commercial, research or academic use by individuals at academic, government or non-profit institutions. Users intending to use ZOVER data for commercial purposes should contact us via the official email.*
@@ -72,6 +72,7 @@ tick_viruses_raw$count <- 1
 
 # check structure of dataframe
 str(tick_viruses_raw) # 8,110 x 11 (~500 more since accessed 2023-09-24)
+
 ```
 
 ##Step 2. Quick coarse clean for EDA
@@ -201,8 +202,6 @@ tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2009~2011"] 
 
 
 
-
-
 ## now there's 77 observations with years that are reported 2+ years together
 
 
@@ -249,6 +248,8 @@ tick_virus_all <- tick_virus_all %>%
 
 tick_virus_all %>% 
   filter(year_agg == "pre-1950") # only 3 left so I feel fine leaving it as that
+
+
 ```
 
 ##Step 5. More EDA post cleaning
@@ -668,6 +669,7 @@ tick_virus_all %>%
 
 There could be more fine tuning, but for now this is good enough for the purposes of the current paper frameworks
 ```{r}
-#write.csv(tick_virus_all_cleanvirus, "tickviruses/clean/tick_viruses_clean_20240921.csv")
+# changed csv name for consistency
+#write.csv(tick_virus_all_cleanvirus, "tickviruses/clean/zover_all_viruses_20240921.csv")
 ```
 
