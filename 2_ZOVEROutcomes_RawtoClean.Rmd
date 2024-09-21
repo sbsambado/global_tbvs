@@ -1,0 +1,673 @@
+---
+title: "2_ZOVEROutcomes_RawtoClean"
+output: html_document
+date: "2024-09-20"
+---
+
+**Purpose** 
+To transform raw data from ZOVER into somewhat cleaned csv to further filter into final outcome variables
+
+**Steps**
+
+1) Upload raw data from ZOVER
+2) Quick coarse clean for EDA purposes
+3) Add country metadata
+4) More refined cleaning for collection year
+5) More EDA post cleaning
+6) Make changes to viral families names
+7) Make changes to individual virus names
+8) Write final csv of clean-ish tick-viruses
+
+
+###Final CSV: tick_viruses_clean_20240921.csv
+^^ this will be filtered to final outcomes for BRT analysis
+
+*Note: The ZOVER data is freely available under the Creative Commons Attribution-NonCommercial (CC BY-NC) license version 4.0 for personal and public non-commercial, research or academic use by individuals at academic, government or non-profit institutions. Users intending to use ZOVER data for commercial purposes should contact us via the official email.*
+
++ full ZOVER website (http://www.mgc.ac.cn/cgi-bin/ZOVER/main.cgi)
++ tick-virus website (http://www.mgc.ac.cn/cgi-bin/ZOVER/mainTable.cgi?db=tick)
+
+Once on tick-virus wesbite, click on subgroups of tick-viruses (e.g. ssDNA), click "show all", click "save this table", open in personal excel, save as csv to Rproj
+
+This data was accessed 2024-09-21
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## upload necessary packages
+library(ggplot2)
+library(tidyverse)
+library(readr)
+library(janitor)
+library(lubridate)
+library(stringr)
+library(countrycode)
+library(rnaturalearth)
+```
+
+##Step 1. Upload raw data
+```{r}
+## upload individual tables for Tick-Classified Viruses
+
+dsDNA_noRNA <- read_csv("tickviruses/raw/Tick-associated viruses (dsDNA viruses, no RNA stage) .csv", skip = 1) %>% clean_names()
+dsRNA <- read_csv("tickviruses/raw/Tick-associated viruses (dsRNA viruses) .csv", skip = 1) %>% clean_names()
+ssDNA <- read_csv("tickviruses/raw/Tick-associated viruses (ssDNA viruses) .csv", skip = 1) %>% clean_names()
+ssRNA_negstrands <- read_csv("tickviruses/raw/Tick-associated viruses (ssRNA negative-strand viruses) .csv", skip = 1) %>% clean_names()
+ssRNA_posstrands <- read_csv("tickviruses/raw/Tick-associated viruses (ssRNA positive-strand viruses, no DNA stage) .csv", skip = 1) %>% clean_names()
+unlcassified <- read_csv("tickviruses/raw/Tick-associated viruses (unclassified viruses) .csv", skip = 1) %>% clean_names()
+
+## add unique identifier for each database
+dsDNA_noRNA$type <- "dsDNA_noRNA"
+dsRNA$type <- "dsRNA"
+ssDNA$type <- "ssDNA"
+ssRNA_negstrands$type <- "ssRNA_negstrands"
+ssRNA_posstrands$type <- "ssRNA_posstrands"
+unlcassified$type <- "unlcassified"
+
+## combine all csv files into 1 csv file
+tick_viruses_raw <- rbind(dsDNA_noRNA, dsRNA, ssDNA, ssRNA_negstrands, ssRNA_posstrands, unlcassified )
+
+# add count column for EDA
+tick_viruses_raw$count <- 1
+
+# check structure of dataframe
+str(tick_viruses_raw) # 8,110 x 11 (~500 more since accessed 2023-09-24)
+```
+
+##Step 2. Quick coarse clean for EDA
+- column names, check levels, fix some pecularities about virus names but will need to do this more systematically
+```{r}
+# clean up column names and data types
+tick_virus_all <- tick_viruses_raw %>% 
+  clean_names() %>% 
+  mutate_at(c('collection_year', 'sampling_country','type'),
+            as.factor) 
+
+# check that levels are consistent
+length(unique(tick_virus_all$viruses)) # 7611
+length(unique(tick_virus_all$viral_family)) # 25
+length(unique(tick_virus_all$from_tick)) # 152
+length(unique(tick_virus_all$tick_genus)) # 13
+
+# split up viruses into more manageable analysis chunks
+tick_virus_all[,12:13] <-str_split_fixed(tick_virus_all$viruses, c("virus|Virus|sp."), 2)
+#tick_virus_all[,12:13] <- str_split_fixed(tick_virus_all$viruses, "virus", 2)
+names(tick_virus_all)[12] <- "virus_abbrev"
+names(tick_virus_all)[13] <- "virus_strain"
+
+# check how much more this need works
+# unique(tick_virus_all$virus_abbrev)
+
+# trim extra white space at right side of label
+tick_virus_all$virus_abbrev <- str_trim(tick_virus_all$virus_abbrev,"right")
+
+## lump some virus abbreviations together
+# CCHF
+tick_virus_all$virus_abbrev[(tick_virus_all$virus_abbrev) =="Crimean-Congo hemorrhagic fever orthonairo"] <- "Crimean-Congo hemorrhagic fever"
+
+# Tick Phlebovirus
+tick_virus_all$virus_abbrev[(tick_virus_all$virus_abbrev) =="Phlebo"] <- "Tick phlebo"
+tick_virus_all$virus_abbrev[(tick_virus_all$virus_abbrev) =="unclassified Phlebo"] <- "Tick phlebo"
+tick_virus_all$virus_abbrev[(tick_virus_all$virus_abbrev) =="Jingmen"] <- "Jingmen tick"
+
+
+```
+
+##Step 3. Add spatial metadata
+```{r}
+# add iso3c code
+tick_virus_all$iso3c <- countrycode(tick_virus_all$sampling_country, 
+            origin = 'country.name',
+            destination = 'iso3c')
+
+# add continent 
+ tick_virus_all <-  tick_virus_all %>%
+   mutate(continent = countrycode(iso3c, origin = "iso3c",
+                                  destination = "continent"))
+ 
+ 
+# upload world map
+world <- ne_countries(scale = "large", returnclass = "sf")
+
+```
+
+##Step 4. More refined cleaning
+
+### Fix dates
+
+The steps I decided to do:
+
+1. observations with ~ = if it's same year fix to same year (ie 2019~2019 is just 2019)
+
+2. observations with ~ = if it's across 2 years, go with the first (ie 2018-2019 is 2018)
+
+3. see how many more observations with ~ = either omit or make a judgement call
+
+4. separate years into every 5 years?
+
+```{r}
+
+unique(tick_virus_all$collection_year)
+
+## step 1. if same year fix to just 1 year
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2022~2022"] <- "2022"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2020~2020"] <- "2020"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2019~2019"] <- "2019"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2017~2017"] <- "2017"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2016~2016"] <- "2016"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2015~2015"] <- "2015"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2013~2013"] <- "2013"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2005~2005"] <- "2005"
+
+
+## step 2. if only 2 year span choose first year
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2018~2019"] <- "2018"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2016~2017"] <- "2016"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2015~2016"] <- "2015"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2014~2015"] <- "2014"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2011~2012"] <- "2011"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2004~2005"] <- "2004"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2000~2001"] <- "2000"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "1997~1998"] <- "1997"
+
+## step 3a. how many other 1+ year strings are there?
+tick_virus_all %>% 
+  filter(grepl("~", collection_year)) # 123 observations
+
+## step 3b. If it's only 2 year difference choose the middle year
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2019~2021"] <- "2020"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2013~2015"] <- "2014"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2012~2014"] <- "2012"
+
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "2009~2011"] <- "2010"
+
+
+
+
+
+## now there's 77 observations with years that are reported 2+ years together
+
+
+
+## step 4. edit other random erros
+tick_virus_all$collection_year[(tick_virus_all$collection_year) == "0199"] <- "1990"
+
+tick_virus_all %>% 
+  filter(collection_year == "ND") # 462 years not reported
+
+
+### okay let's try to map this out as best as possible and make a decision about the 77 observations with 2+ year aggregation reported
+
+unique(tick_virus_all$collection_year)
+
+tick_virus_all %>% 
+  filter(grepl("~", collection_year)) # 56 observations
+
+dim(tick_virus_all)# 8110 × 15
+```
+
+Let's try to aggregate observations by 5 years
+```{r}
+tick_virus_all <- tick_virus_all %>% 
+  mutate(collection_year = as.numeric(as.character(collection_year))) %>% 
+  filter(!(grepl("~", collection_year)) & collection_year != "ND") %>% 
+  mutate(year_agg = case_when(
+    collection_year >= 2020 ~ "2020",
+    collection_year >= 2015 ~ "2015",
+    collection_year >= 2010 ~ "2010",
+    collection_year >= 2005 ~ "2005",
+    collection_year >= 2000 ~ "2000",
+    collection_year >= 1995 ~ "1995",
+    collection_year >= 1990 ~ "1990",
+    collection_year >= 1985 ~ "1985",
+    collection_year >= 1980 ~ "1980",
+    collection_year >= 1975 ~ "1975",
+    collection_year >= 1970 ~ "1970",
+    collection_year >= 1965 ~ "1965",
+    collection_year >= 1960 ~ "1960",
+    collection_year >= 1955 ~ "1955",
+    collection_year >= 1950 ~ "1950",
+    collection_year < 1950 ~ "pre-1950"))
+
+tick_virus_all %>% 
+  filter(year_agg == "pre-1950") # only 3 left so I feel fine leaving it as that
+```
+
+##Step 5. More EDA post cleaning
+
+check all countries are cleaned up
+```{r}
+unique(tick_virus_all$sampling_country) # 94/195 total
+
+# let's see what's ND
+View(tick_virus_all %>%  # 28
+  filter(sampling_country == "ND") %>% 
+    group_by(references) %>% 
+    tally()) # 28 observations not listed.. checking reference
+
+# many of these ND are cultures or unpublished.. maybe should get rid of both
+
+tick_virus_all %>% 
+  filter(sample_type == "Culture") #1,433 observations are cultured.. probably should remove these but worry about that once I get to analysis
+```
+
+check all viral familiy are cleaned up
+```{r}
+# first check unique viral families
+unique(tick_virus_all$viral_family) # 23 unique families + 1 NA
+
+
+# figure out what's NA
+tick_virus_all %>% 
+  filter(viral_family == "N/A") %>%  # 750 observations ... after 4 fixes its 467
+  group_by(sampling_country,viral_family) %>% 
+  tally() %>% # okay so a lot come from China, let's see if there's a common virus I can convert to viral family
+ arrange(desc(n))
+
+# fixing NA from China
+tick_virus_all %>% 
+  filter(viral_family == "N/A" & sampling_country == "China") %>% 
+  group_by(virus_abbrev) %>% 
+  tally() %>%  # bole tick bole,  hyalomma asisticum, 
+  arrange(desc(n))
+
+tick_virus_all %>%
+  filter(grepl("Bole", viruses)) %>% 
+  group_by(viral_family) %>% 
+  tally() %>% 
+  arrange(desc(n))#  okay so bole viruses can be phenuiviridae or rhabdoviridae... 63 observations are NA why is that
+
+tick_virus_all %>%
+  filter(grepl("Bole", viruses) & viral_family == "N/A") 
+
+tick_virus_all %>%
+  filter(grepl("Jingmen", viruses)) # looks like it's flaviviridae
+
+tick_virus_all %>%
+  filter(grepl("Wuhan", viruses)) # looks like it's Rhabdoviridae
+
+# fixing NA from Australia
+tick_virus_all %>% 
+  filter(viral_family == "N/A" & sampling_country == "Australia") %>% 
+  group_by(virus_abbrev) %>% # so nothing in australia has viral family resolved
+  tally() %>%  
+  arrange(desc(n))
+
+tick_virus_all %>%
+  filter(grepl("Shelly headland", viruses)) 
+
+# fixing NAs from Russia
+tick_virus_all %>% 
+  filter(viral_family == "N/A" & sampling_country == "Russia") %>% 
+  group_by(virus_abbrev)
+
+
+## okay fixed some let's check main NAs left 467.. will try to par this down further later
+tick_virus_all %>% 
+  filter(viral_family == "N/A") %>%  # & sampling_country != "Australia") %>% 
+  group_by(virus_abbrev) %>% 
+  tally() %>% 
+  arrange(desc(n)) # bole tick 55
+
+```
+
+##Step 6. Make more changes to viral families
+
+Direct editing viral family (go back to re-run this with code)
+```{r}
+# first fix
+tick_virus_all <- 
+tick_virus_all %>%
+  mutate(viral_family = if_else(
+    grepl("Jingmen", viruses, fixed = TRUE),
+    "Flaviviridae", viral_family
+  )) 
+  # filter(grepl("Jingmen", viruses))
+
+# second fix
+tick_virus_all <- 
+tick_virus_all %>%
+  mutate(viral_family = if_else(
+    grepl("Wuhan", viruses, fixed = TRUE),
+    "Rhabdoviridae", viral_family
+  )) #%>% 
+  #filter(grepl("Wuhan", viruses))
+
+
+# 3rd fix
+tick_virus_all <- 
+  tick_virus_all %>%
+  mutate(viral_family = if_else(
+    grepl("Haseki", viruses, fixed = TRUE),
+    "Flaviviridae", viral_family
+  ))  
+  #filter(grepl("Haseki", viruses))
+
+
+# 4rd fix
+tick_virus_all <- 
+tick_virus_all %>%
+  mutate(viral_family = if_else(
+    grepl("Yanggou", viruses, fixed = TRUE),
+    "Flaviviridae", viral_family
+  ))  
+  #filter(grepl("Yanggou", viruses))
+```
+
+
+##Step 7. Make changes to individual virus names
+
+Coarse way to do this but for the purposes of the proposed papers, this is fine
+```{r}
+# see all unique
+unique(tick_virus_all$virus_abbrev)
+
+# pull out the most common ones
+
+# test this function first
+#tick_virus_all %>%
+#  mutate(fix_viruses = case_when(grepl("Kemerovo virus", viruses) ~ "Kemerovo tickborne viral fever")) %>% 
+#  dplyr::select(c(2,18))
+
+
+tick_virus_all_cleanvirus <- tick_virus_all %>%
+  mutate(fix_viruses = case_when(grepl("African swine fever", viruses) ~ "African swine fever",
+                                 grepl("Colorado tick fever", viruses) ~ "Colorado tick fever",
+                                grepl("Lumpy skin disease", viruses) ~ "Lumpy skin disease",
+                                grepl("Kemerovo virus", viruses) ~ "Kemerovo tickborne viral fever",
+                                grepl("Pseudocowpox virus", viruses) ~ "Pseudocowpox virus",
+                                grepl("Eyach virus", viruses) ~ "Eyach virus", #TBE?
+                                grepl("Crimean-Congo hemorrhagic fever", viruses) ~ "Crimean-Congo hemorrhagic fever",
+                                grepl("Okutama tick virus", viruses) ~ "Okutama tick virus",
+                                grepl("bole tick", viruses) ~ "Bole tick XXX",
+                                grepl("Bole Tick", viruses) ~ "Bole tick XXX",
+                                grepl("Bole tick", viruses) ~ "Bole tick XXX",
+                                grepl("Bocaparvovirus", viruses) ~ "Bocaparvovirus",
+                                grepl("Severe fever with thrombocytopenia virus", viruses) ~ "Severe fever with thrombocytopenia virus",
+                                grepl("Nairobi sheep disease virus", viruses) ~ "Nairobi sheep disease virus",
+                                grepl("Dabieshan Tick", viruses) ~ "Dabieshan Tick",
+                                grepl("St Croix River virus", viruses) ~ "St Croix River virus",
+                                grepl("Sawgrass", viruses) ~ "Sawgrass virus",
+                                grepl("Phlebovirus", viruses) ~ "Phlebovirus XXX",
+                                grepl("Taishun Tick Virus", viruses) ~ "Taishun Tick virus XXX",
+                                grepl("phlebovirus", viruses) ~ "Phlebovirus XXX",
+                                grepl("Wuhan Tick Virus 1", viruses) ~ "Wuhan tick virus 1",
+                                grepl("Wuhan Tick Virus 2", viruses) ~ "Wuhan tick virus 2",
+                                grepl("Wuhan tick virus 2", viruses) ~ "Wuhan tick virus 2",
+                                grepl("Tarumizu tick virus", viruses) ~ "Tarumizu tick virus",
+                                grepl("Guangdong tick orbivirus", viruses) ~ "Guangdong tick orbivirus",
+                                grepl("Xinjiang tick orbivirus", viruses) ~ "Xinjiang tick orbivirus",
+                                grepl("Okhotskiy virus", viruses) ~ "Okhotskiy virus",
+                                grepl("Huangpi Tick Virus", viruses) ~ "Huangpi tick Virus",
+                                grepl("Dugbe orthonairovirus ", viruses) ~ "Dugbe orthonairovirus XXX",
+                                grepl("Tacheng Tick Virus 1", viruses) ~ "Tacheng tick virus 1 XXX",
+                                grepl("Yezo virus", viruses) ~ "Yezo virus XXX",
+                                grepl("Zhangzhou tick virus 1", viruses) ~ "Zhangzhou tick virus 1 XXX",
+                                grepl("Songling virus", viruses) ~ "Songling virus XXX",
+                                grepl("Wad Medani virus", viruses) ~ "Wad Medani virus XXX",
+                                grepl("Tacheng Tick Virus ", viruses) ~ "Tacheng Tick virus XXX",                                 
+                                grepl("Odaw virus", viruses) ~ "Odaw virus XXX",
+                                grepl("Guertu virus", viruses) ~ "Guertu virus XXX",
+                                grepl("Shibuyunji virus", viruses) ~ "Shibuyunji virus XXX",
+                                grepl("Quaranfil quaranjavirus", viruses) ~ "Quaranfil quaranjavirus XXX",
+                                grepl("Tacheng Tick Virus", viruses) ~ "Tacheng tick virus XXX",
+                                grepl("Heartland virus", viruses) ~ "Heartland virus",
+                                grepl("Changping Tick Virus", viruses) ~ "Changping tick virus XXX",
+                                grepl("Bhanja virus", viruses) ~ "Bhanja virus XXX",
+                                grepl("Kupe virus", viruses) ~ "Kupe virus XXX",
+                                grepl("Lihan tick virus", viruses) ~ "Lihan tick virus XXX",
+                                grepl("Bourbon virus", viruses) ~ "Bourbon virus",
+                                grepl("Mukawa virus", viruses) ~ "Mukawa virus XXX",
+                                grepl("Punta Salinas", viruses) ~ "Punta Salinas XXX",
+                                grepl("Ohshima virus", viruses) ~ "Ohshima virus XXX",
+                                grepl("Hazara virus ", viruses) ~ "Hazara virus  XXX",
+                                grepl("Zaliv Terpenia virus", viruses) ~ "Zaliv Terpenia virus XXX",
+                                grepl("Paramushir virus", viruses) ~ "Paramushir virus XXX",
+                                grepl("Lesvos virus", viruses) ~ "Lesvos virus XXX",
+                                grepl("Kaisodi virus", viruses) ~ "Kaisodi virus XXX",
+                                grepl("Taggert virus", viruses) ~ "Taggert virus XXX",
+                                grepl("Bogoria virus", viruses) ~ "Bogoria virus XXX",
+                                grepl("Yongjia Tick Virus 2", viruses) ~ "Yongjia tick virus 2 XXX",
+                                grepl("Soldado virus", viruses) ~ "Soldado virus XXX",
+                                grepl("Kasokero virus", viruses) ~ "Kasokero virus XXX",
+                                grepl("Huaiyangshan virus", viruses) ~ "Huaiyangshan virus XXX",
+                                grepl("Powassan virus", viruses) ~ "Powassan virus",
+                                grepl("Tick-borne encephalitis virus", viruses) ~ "Tick-borne encephalitis virus",
+                                grepl("Jingmen tick virus", viruses) ~ "Jingmen tick virus XXX",
+                                grepl("Karshi virus", viruses) ~ "Karshi virus XXX",
+                                grepl("Alkhumra hemorrhagic fever virus", viruses) ~ "Alkhumra hemorrhagic fever virus XXX",
+                                grepl("Kyasanur Forest disease virus", viruses) ~ "Kyasanur Forest disease virus  XXX",
+                                grepl("Komandory virus", viruses) ~ "Komandory virus XXX",
+                                grepl("Tjuloc virus", viruses) ~ "Tjuloc virus XXX",
+                                grepl("Rukutama virus", viruses) ~ "Rukutama virus XXX",
+                                grepl("Tillamook virus", viruses) ~ "Tillamook virus XXX",
+                                grepl("Rift Valley fever virus", viruses) ~ "Rift Valley fever virus XXX",
+                                grepl("South Bay virus", viruses) ~ "South Bay virus XXX",
+                                grepl("Harz mountain virus", viruses) ~ "Harz mountain virus XXX",
+                                grepl("Guangxi tick virus", viruses) ~ "Guangxi tick virus XXX",
+                                grepl("West Nile virus", viruses) ~ "West Nile virus XXX",
+                                grepl("Alongshan virus", viruses) ~ "Alongshan virus XXX",
+                                grepl("Omsk hemorrhagic fever virus", viruses) ~ "Omsk hemorrhagic fever virus XXX",
+                                grepl("Heilongjiang tick virus", viruses) ~ "Heilongjiang tick virus XXX",
+                                grepl("Japanese encephalitis virus", viruses) ~ "Japanese encephalitis virus XXX",
+                                grepl("Takachi virus", viruses) ~ "Takachi virus XXX",
+                                grepl("Louping ill virus", viruses) ~ "Louping ill virus XXX",
+                                grepl("Kindia tick virus", viruses) ~ "Kindia tick virus XXX",
+                                grepl("Deer tick virus", viruses) ~ "Deer tick virus XXX", # Powassan
+                                grepl("Mogiana tick virus", viruses) ~ "Mogiana tick virus XXX",
+                                grepl("Jingmenvirus", viruses) ~ "Jingmen tick virus XXX",
+                                grepl("Yamaguchi virus", viruses) ~ "Yamaguchi virus XXX",
+                                grepl("Yanggou tick virus", viruses) ~ "Yanggou tick virus XXX",
+                                grepl("Haseki tick virus", viruses) ~ "Haseki tick virus XXX",
+                                grepl("Issyk-Kul virus", viruses) ~ "Issyk-Kul virus XXX",
+                                grepl("Pustyn virus", viruses) ~ "Pustyn virus XXX",
+                                grepl("Tamdy virus", viruses) ~ "Tamdy virus XXX",
+                                grepl("Khasan virus", viruses) ~ "Khasan virus XXX",
+                                grepl("Batken virus", viruses) ~ "Batken virus XXX",
+                                grepl("Meihua Mountain virus", viruses) ~ "Meihua Mountain virus XXX",
+                                grepl("Uumaja virus", viruses) ~ "Uumaja virus XXX",
+                                grepl("Nanning Phenu tick virus", viruses) ~ "Nanning Phenu tick virus XXX",
+                                grepl("Yushu tick virus", viruses) ~ "Yushu tick virus XXX",
+                                grepl("Wenzhou Tick Virus", viruses) ~ "Wenzhou tick virus XXX",
+                                grepl("Langat virus", viruses) ~ "Langat virus XXX",
+                                grepl("Saumarez Reef virus", viruses) ~ "Saumarez Reef virus XXX",
+                                grepl("Finch creek virus", viruses) ~ "Finch creek virus XXX",
+                                grepl("Sapphire II virus", viruses) ~ "Sapphire II virus XXX",
+                                grepl("Zirqa virus", viruses) ~ "Zirqa virus XXX",
+                                grepl("Camel tick virus", viruses) ~ "Camel tick virus XXX",
+                                grepl("Ingleside virus", viruses) ~ "Ingleside virus XXX",
+                                grepl("North shore virus", viruses) ~ "North shore virus XXX",
+                                grepl("Shelly headland virus", viruses) ~ "Shelly headland virus XXX",
+                                grepl("Avalon virus", viruses) ~ "Avalon virus XXX",
+                                grepl("Fuyun tick virus", viruses) ~ "Fuyun tick virus XXX",
+                                grepl("Dudero virus", viruses) ~ "Dudero virus XXX",
+                                grepl("Gravol virus", viruses) ~ "Gravol virus XXX",
+                                grepl("Karukera tick virus", viruses) ~ "Karukera tick virus XXX",
+                                grepl("North shore virus", viruses) ~ "North shore virus XXX",
+                                grepl("Reoviridae sp.", viruses) ~ "Reoviridae sp. YYY", # YYY for sp not identified but want to get rid of na
+                                grepl("Ixovirus sp.",viruses) ~ "Ixovirus sp. YYY", 
+                                grepl("Peribunyaviridae sp.", viruses) ~ "Peribunyaviridae sp. YYY", 
+                                grepl("Rhabdoviridae sp.", viruses) ~ "Rhabdoviridae sp. YYY", 
+                                grepl("Orthomyxoviridae sp.", viruses) ~ "Orthomyxoviridae sp. YYY", 
+                                grepl("Nairoviridae sp.", viruses) ~ "Nairoviridae sp. YYY", 
+                                grepl("Phenuiviridae sp.", viruses) ~ "Phenuiviridae sp. YYY",
+                                grepl("Palyam virus", viruses) ~ "Palyam virus XXX",
+                                grepl("Great Island virus", viruses) ~ "Great Island virus XXX",
+                                grepl("Muko virus", viruses) ~ "Muko virus XXX",
+                                grepl("Aniva virus", viruses) ~ "Aniva virus XXX",
+                                grepl("Baku virus", viruses) ~ "Baku virus XXX",
+                                grepl("Matucare virus", viruses) ~ "Matucare virus XXX",
+                                grepl("Kundal virus", viruses) ~ "Kundal virus XXX",
+                                grepl("Nugget virus", viruses) ~ "Nugget virus XXX",
+                                grepl("Sandy Bay Virus", viruses) ~ "Sandy Bay virus XXX",
+                                grepl("Chobar Gorge virus", viruses) ~ "Chobar Gorge virus XXX",
+                                grepl("Gierle tick virus", viruses) ~ "Gierle tick virus XXX",
+                                grepl("Zoersel tick virus", viruses) ~ "Zoersel tick virus XXX",
+                                grepl("Lishui pangolin virus", viruses) ~ "Lishui pangolin virus XXX",
+                                grepl("Tribec virus", viruses) ~ "Tribec virus XXX",
+                                grepl("Aleutian mink disease virus", viruses) ~ "Aleutian mink disease virus XXX",
+                                grepl("New Minto virus", viruses) ~ "New Minto virus XXX",
+                                grepl("Imakoba tick virus", viruses) ~ "Imakoba tick virus XXX",
+                                grepl("Kabuto mountain virus", viruses) ~ "Kabuto mountain virus XXX",
+                                grepl("Gissar virus", viruses) ~ "Gissar virus XXX",
+                                grepl("New Minto virus", viruses) ~ "New Minto virus XXX",
+                                grepl("Burana virus", viruses) ~ "Burana virus XXX",
+                                grepl("Bronnoya virus", viruses) ~ "Bronnoya virus XXX",
+                                grepl("Connecticut virus", viruses) ~ "Connecticut virus XXX",
+                                grepl("Grand Arbaud virus", viruses) ~ "Grand Arbaud virus XXX",
+                                grepl("Rondonia orthonairovirus", viruses) ~ "Rondonia orthonairovirus YYY",
+                                grepl("Farallon virus", viruses) ~ "Farallon virus XXX",
+                                grepl("Silverwater virus", viruses) ~ "Silverwater virus XXX",
+                                grepl("Quaranjavirus sp.", viruses) ~ "Quaranjavirus sp. YYY",
+                                grepl("Precarious point virus", viruses) ~ "Precarious point virus XXX",
+                                grepl("Vinegar Hill virus", viruses) ~ "Vinegar Hill virus XXX",
+                                grepl("Hunter Island virus", viruses) ~ "Hunter Island virus XXX",
+                                grepl("Kuriyama virus", viruses) ~ "Kuriyama virus XXX",
+                                grepl("Grotenhout virus", viruses) ~ "Grotenhout virus XXX",
+                                grepl("Gomselga virus", viruses) ~ "Gomselga virus XXX",
+                                grepl("Ngari virus", viruses) ~ "Ngari virus XXX",
+                                grepl("Wanowrie virus", viruses) ~ "Wanowrie virus XXX",
+                                grepl("Toyo virus", viruses) ~ "Toyo virus XXX",
+                                grepl("Ngari virus", viruses) ~ "Ngari virus XXX",
+                                grepl("Estero Real virus", viruses) ~ "Estero Real virus XXX",
+                                grepl("Iftin tick virus", viruses) ~ "Iftin tick virus XXX",
+                                grepl("Geran virus", viruses) ~ "Geran virus XXX",
+                                grepl("Zambezi tick virus", viruses) ~ "Zambezi tick virus XXX",
+                                grepl("Umea virus", viruses) ~ "Umea virus XXX",
+                                grepl("Bonden virus", viruses) ~ "Bonden virus XXX",
+                                grepl("Ubmeje virus", viruses) ~ "Ubmeje virus XXX",
+                                grepl("Manawa virus", viruses) ~ "Manawa virus XXX",
+                                grepl("Uukuniemi virus", viruses) ~ "Uukuniemi virus XXX",
+                                grepl("Palma virus", viruses) ~ "Palma virus XXX",
+                                grepl("Cencurut virus", viruses) ~ "Cencurut virus XXX",
+                                grepl("Sunday Canyon virus", viruses) ~ "Sunday Canyon virus XXX",
+                                grepl("Saphire II virus", viruses) ~ "Saphire II virus XXX",
+                                grepl("New Kent County virus", viruses) ~ "New Kent County virus XXX",
+                                grepl("Laurel Lake virus", viruses) ~ "Laurel Lake virus XXX",
+                                grepl("Uukuniemi virus", viruses) ~ "Uukuniemi virus XXX",
+                                grepl("Stavropol virus", viruses) ~ "Stavropol virus XXX",
+                                grepl("Bronnoya virus", viruses) ~ "Bronnoya virus XXX",
+                                grepl("Dandong tick virus", viruses) ~ "Dandong tick virus XXX",
+                                grepl("Guyuan tick virus", viruses) ~ "Guyuan tick virus XXX",
+                                grepl("Heihe tick virus", viruses) ~ "Heihe tick virus XXX",
+                                grepl("Nanchang tick virus", viruses) ~ "Nanchang tick virus XXX",
+                                grepl("Tonghua tick virus", viruses) ~ "Tonghua tick virus XXX",
+                                grepl("Zhangye tick virus", viruses) ~ "Zhangye tick virus XXX",
+                                grepl("Balambala tick virus", viruses) ~ "Balambala tick virus XXX",
+                                grepl("Gakugsa tick virus", viruses) ~ "Gakugsa tick virus XXX",
+                                grepl("Lone Star virus", viruses) ~ "Lone Star virus XXX",
+                                grepl("Kuriyama virus", viruses) ~ "Kuriyama virus XXX",
+                                grepl("Kumlinge virus", viruses) ~ "Kumlinge virus XXX",
+                                grepl("Middelburg virus", viruses) ~ "Middelburg virus XXX",
+                                grepl("Meaban virus", viruses) ~ "Meaban virus XXX",
+                                grepl("Gadgets Gully virus", viruses) ~ "Gadgets Gully virus XXX",
+                                grepl("Royal Farm virus", viruses) ~ "Royal Farm virus XXX",
+                                grepl("Ngoye virus", viruses) ~ "Ngoye virus XXX",
+                                grepl("Jiutai virus", viruses) ~ "Jiutai virus XXX",
+                                grepl("Tyuleniy virus", viruses) ~ "Tyuleniy virus XXX",
+                                grepl("Kama virus", viruses) ~ "Kama virus XXX",
+                                grepl("Tyuleniy virus", viruses) ~ "Tyuleniy virus XXX",
+                                grepl("Tacheng tick virus", viruses) ~ "Tacheng tick virus XXX",
+                                grepl("Sikhote-Alin virus", viruses) ~ "Sikhote-Alin virus XXX",
+                                grepl("Trinbago virus", viruses) ~ "Trinbago virus XXX",
+                                grepl("Tacheng tick virus", viruses) ~ "Tacheng tick virus XXX",
+                                grepl("Flaviviridae sp.", viruses) ~ "Flaviviridae sp. YYY",
+                                grepl("Picornaviridae sp.", viruses) ~ "Picornaviridae sp. YYY",
+                                grepl("Turkish sheep encephalitis virus", viruses) ~ "Turkish sheep encephalitis virus XXX",
+                                grepl("Greek goat encephalitis virus", viruses) ~ "Greek goat encephalitis virus XXX",
+                                grepl("Hubei tick virus", viruses) ~ "Hubei tick virus XXX",
+                                grepl("Fennes virus", viruses) ~ "Fennes virus XXX",
+                                grepl("Bulatov virus", viruses) ~ "Bulatov virus XXX",
+                                grepl("Messner virus", viruses) ~ "Messner virus XXX",
+                                grepl("Gerbovich virus", viruses) ~ "Gerbovich virus XXX",
+                                grepl("Piguzov virus", viruses) ~ "Piguzov virus XXX",
+                                grepl("Vovk virus", viruses) ~ "Vovk virus XXX",
+                                grepl("Mackintosh virus", viruses) ~ "Mackintosh virus XXX",
+                                grepl("Ed virus", viruses) ~ "Ed virus XXX",
+                                grepl("Snesslinge virus", viruses) ~ "Snesslinge virus XXX",
+                                grepl("Agalma virus", viruses) ~ "Agalma virus XXX",
+                                grepl("Bolka virus", viruses) ~ "Bolka virus XXX",
+                                grepl("Qualyub virus", viruses) ~ "Qualyub virus XXX",
+                                grepl("Graso virus", viruses) ~ "Graso virus XXX",
+                                grepl("Hepelivirales sp.", viruses) ~ "Hepelivirales sp. YYY",
+                                grepl("Henan tick virus", viruses) ~ "Henan tick virus XXX",
+                                grepl("Valo virus", viruses) ~ "Valo virus XXX",
+                                grepl("Ganjam virus", viruses) ~ "Ganjam virus XXX",
+                                grepl("Timbillica virus", viruses) ~ "Timbillica virus XXX",
+                                grepl("Genoa virus", viruses) ~ "Genoa virus XXX",
+                                grepl("Liman tick virus", viruses) ~ "Liman tick virus XXX",
+                                 grepl("Canne point virus", viruses) ~ "Canne point virus XXX",
+                                 grepl("Collins beach virus", viruses) ~ "Collins beach virus XXX",
+                                 grepl("Fairfax lookout virus", viruses) ~ "Fairfax lookout virus XXX",
+                                 grepl("Fairlight virus", viruses) ~ "Fairlight virus XXX",
+                                grepl("Jump rock virus", viruses) ~ "Jump rock virus XXX",
+                                 grepl("Manly virus", viruses) ~ "Manly virus XXX",
+                                 grepl("Nadgee virus", viruses) ~ "Nadgee virus XXX",
+                                 grepl("Old quarry swamp virus", viruses) ~ "Old quarry swamp virus XXX",
+                                 grepl("Quarantine head virus", viruses) ~ "Quarantine head virus XXX",
+                                grepl("Store beach virus", viruses) ~ "Store beach virus XXX",
+                                 grepl("Store beach virus", viruses) ~ "Store beach virus XXX",
+                                 grepl("Yambulla virus", viruses) ~ "Yambulla virus XXX",
+                                 grepl("Ronne virus", viruses) ~ "Ronne virus XXX",
+                                grepl("Fennes virus", viruses) ~ "Fennes virus XXX",
+                                 grepl("Gerbovich virus", viruses) ~ "Gerbovich virus XXX",
+                                 grepl("Bulatov virus", viruses) ~ "Bulatov virus XXX",
+                                 grepl("Vovk virus", viruses) ~ "Vovk virus XXX",
+                                grepl("Torhout tick virus", viruses) ~ "Torhout tick virus XXX",
+                                grepl("Great Saltee virus", viruses) ~ "Great Saltee virus XXX",
+                                grepl("Shanxi tick virus", viruses) ~ "Shanxi tick virus XXX",
+                                grepl("Hubei tick virus", viruses) ~ "Hubei tick virus XXX",
+                                grepl("Avalon Bres virus", viruses) ~ "Avalon Bres virus XXX",
+                                grepl("Henan tick virus", viruses) ~ "Henan tick virus XXX",
+                                grepl("Fort Crockett virus", viruses) ~ "Fort Crockett virus XXX"
+                                
+         )) 
+
+
+# see if i can fix stragglers
+unique(tick_virus_all_cleanvirus$fix_viruses)
+tick_virus_all_cleanvirus[is.na(tick_virus_all_cleanvirus$fix_viruses),] # 553
+View(tick_virus_all_cleanvirus[is.na(tick_virus_all_cleanvirus$fix_viruses),]) 
+
+## okay let's see what happens when i get rid of generic species
+#tick_virus_all_cleanvirus %>% 
+#  filter(grepl("Reoviridae sp.", viruses) |
+
+tick_virus_all_cleanvirus %>% 
+  filter(grepl("associated", viruses)) # 129 associated
+
+
+tick_virus_all %>% 
+  filter(references == "Unpublished") %>% 
+  tally() # 2933	
+
+tick_virus_all %>% 
+  filter(sample_type == "Culture") %>% 
+  tally() # 1395	
+```
+
+##Step 8. Write csv of cleaned up 
+
+There could be more fine tuning, but for now this is good enough for the purposes of the current paper frameworks
+```{r}
+#write.csv(tick_virus_all_cleanvirus, "tickviruses/clean/tick_viruses_clean_20240921.csv")
+```
+
