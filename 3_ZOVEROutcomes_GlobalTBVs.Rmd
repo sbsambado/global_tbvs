@@ -1,0 +1,343 @@
+---
+title: "3_ZOVEROutcomes_GlobalTBVs"
+output: html_document
+date: "2024-09-21"
+---
+
+**Purpose** 
+To further refine ZOVER data for the purpose of creating a dataset that represents only the top ~15 tick-borne viruses to be merged with global trait matrix
+
+**Steps**
+
+1) Find what are the top reported TBVs on ZOVER (n > 30)
+2) Fix the names of the top reported TBVs
+3) Filter to top ~15 viruses between 1990-2023
+4) Aggregated counts per country & assign 1/0 per country
+5) Slim the dataset to just relevant ZOVER metadata 
+6) Merge aggregated country counts with relevant ZOVER metadata
+7) Run some basic summaries for Methods
+8) Add citation counts using easyPubMed
+9) Aggregate citation count per country
+10) Give each country a citation weight
+11) Write csv for top reported tick-borne viruses
+
+###Final CSV: zover_toprecognized_complete_20240921.csv
+^^ this will be data that is merged with global trait matrix
+
+Set up
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## upload necessary packages
+library(ggplot2)
+library(tidyverse)
+library(readr)
+library(janitor)
+library(rnaturalearth)
+library(easyPubMed)
+
+## upload necessary data
+# clean-ish ZOVER data for all viruses
+zover_all <- read.csv("tickviruses/clean/tick_viruses_clean_20240921.csv")
+
+# 
+worldmap <- ne_countries(scale = "large", type = "countries", returnclass = "sf") %>% 
+```
+
+##Step 1. Find what are the top reported TBVs on ZOVER (n > 30)
+
+```{r}
+
+## first identify the current 30
+zover_all %>% 
+  group_by(viral_family,fix_viruses) %>% 
+  tally() %>% 
+  arrange(desc(n)) %>% 
+  # omit names that are meaningless
+  filter(fix_viruses != "NA" &
+           fix_viruses != "Rhabdoviridae sp. YYY" &
+           viral_family != "N/A" &
+           fix_viruses != "Flaviviridae sp. YYY" &
+           fix_viruses != "Nairoviridae sp. YYY" &
+           fix_viruses != "Peribunyaviridae sp. YYY" &
+           fix_viruses != "Orthomyxoviridae sp. YYY" &
+           fix_viruses != "Phenuiviridae sp. YYY" &
+           fix_viruses != "Bocaparvovirus" &
+           fix_viruses != "Phlebovirus XXX" &
+           n >30) 
+
+```
+
+##Step 2. Fix the names of the top reported TBVs
+```{r}
+## fix names of top ~20 viruses
+zover_all <- zover_all %>% 
+  mutate(fix_viruses = case_when(fix_viruses == "Deer tick virus XXX" ~ "Deer tick virus",
+                                 fix_viruses == "Crimean-Congo hemorrhagic fever"~ "Crimean-Congo Hemorrhagic fever",
+                                 fix_viruses == "Severe fever with thrombocytopenia virus"~ "Severe fever with thrombocytopenia syndrome",
+                                 fix_viruses == "Jingmen tick virus XXX"~ "Jingmen tick virus",
+                                 fix_viruses == "African swine fever"~ "African swine fever virus",
+                                 fix_viruses == "Dabieshan Tick"~ "Dabieshan tick virus",
+                                 fix_viruses == "Wuhan tick virus"~ "Wuhan tick virus",
+                                 fix_viruses == "Alongshan virus XXX"~ "Alongshan virus",
+                                 fix_viruses == "Lihan tick virus XXX"~ "Lihan tick virus",
+                                 fix_viruses == "Yanggou tick virus XXX"~ "Yanggou tick virus",
+                                 fix_viruses == "Mukawa virus XXX"~ "Mukawa virus",
+                                 fix_viruses == "Bole tick XXX"~ "Bole tick virus",
+                                 fix_viruses == "Haseki tick virus XXX"~ "Haseki tick virus",
+                                 fix_viruses == "Taishun Tick virus XXX"~ "Taishun tick virus",
+                                 fix_viruses == "Kyasanur Forest disease virus  XXX"~ "Kyasanur Forest disease virus",
+                                 fix_viruses == "Guangxi tick virus XXX"~ "Guangxi tick virus",
+                                 fix_viruses == "Dugbe orthonairovirus XXX"~ "Dugbe orthonairovirus",
+                                 fix_viruses == "Huaiyangshan virus XXX"~ "Huaiyangshan virus",
+                                 fix_viruses == "Huangpi tick Virus"~ "Huangpi tick virus", 
+                                 fix_viruses == "Alkhumra hemorrhagic fever virus XXX" ~ "Alkhumra hemorrhagic fever virus",
+                                 fix_viruses == "Bhanja virus XXX" ~ "Bhanja virus",
+                                 fix_viruses == "Louping ill virus XXX" ~ "Louping ill virus",
+                                 fix_viruses == "Omsk hemorrhagic fever virus XXX" ~ "Omsk hemorrhagic fever virus",
+                                 TRUE ~ fix_viruses))  
+
+#zover_all %>% filter(grepl("Saw", fix_viruses)) # helps find what is reported in column
+
+```
+
+##Step 3. Filter to top ~15 viruses between 1990-2023
+
+(based on Mansfield 2017, Lippi 2022, de la Fuente 2023)
+
++ African swine fever
++ Alkhumra hemorrhagic fever virus
++ Bhanja virus
++ Bourbon virus
++ Colorado tick fever
++ Crimean-Congo hemorrhagic fever
++ Deer tick virus
++ Heartland virus
++ Jingmen tick virus
++ Kyasanur Forest disease virus
++ Louping ill virus
++ Lumpy skin disease
++ Nairobi sheep disease virus
++ Omsk hemorrhagic fever virus
++ Powassan virus
++ Sawgrass virus
++ Severe fever with thrombocytopenia virus
++ Tick-borne encephalitis virus
+
+```{r}
+zover_toprecognized <- zover_all %>% # 7419 to 4213
+  filter(grepl("Heart",fix_viruses) |
+          grepl("Bourbon",fix_viruses) |
+          grepl("Severe",fix_viruses) |
+          grepl("Crimean",fix_viruses) |
+          grepl("Powassan",fix_viruses) |
+          grepl("Deer tick",fix_viruses) |
+          grepl("Kyasanur",fix_viruses) |
+          grepl("Alkhumra",fix_viruses) |
+          grepl("African swine",fix_viruses) |
+          grepl("Colorado",fix_viruses) |
+          grepl("Louping",fix_viruses) |
+          grepl("Nairobi",fix_viruses) |
+          grepl("Omsk",fix_viruses) |
+          grepl("Saw",fix_viruses) |
+          grepl("Bhanja",fix_viruses) |
+          grepl("Lumpy",fix_viruses) |
+          grepl("Tick-borne enceph", fix_viruses) |
+          grepl("Jingmen",fix_viruses)) %>% 
+  ### THINK ABOUT YEAR CUTOFF -- CHANGE HERE IF MAKE DIFFERENT DECISION ###
+  filter(collection_year > 1989) 
+# got rid of Ganjam
+
+zover_toprecognized %>% 
+  group_by(sample_type) %>% 
+  tally()
+
+
+```
+
+
+##Step 4. Aggregated counts per country & assign 1/0 per country
+
+```{r}
+unique(zover_all$sampling_country)
+
+zover_toprecognized_countryaggregate <- zover_toprecognized %>% 
+  group_by(sampling_country) %>% 
+  tally() %>% 
+  # make sure country names match rnaturalearth
+  rename(admin = sampling_country) %>% 
+  right_join(worldmap, by = "admin") %>% 
+  mutate(iso_a3 = case_when(iso_a3 == "-99" ~ admin, # these are a handful of places like Naval Base Guantanamo but want to make sure they get merged on to final product so will keep their admin name
+                            TRUE ~ iso_a3)) %>% 
+  # assign binomial count
+  mutate(tbv_presence = case_when(n > 0 ~ 1,
+                                  is.na(n) ~ 0),
+         n = case_when(is.na(n) ~ 0,
+                       TRUE ~ n)) %>% 
+  rename(tbv_total = n) %>% 
+  dplyr::select(admin, iso_a3, tbv_presence, tbv_total) 
+```
+
+##Step 5. Slim the dataset to just relevant ZOVER metadata 
+
+```{r}
+zover_toprecognized_slim <- zover_toprecognized %>% 
+  dplyr::select(sampling_country, fix_viruses, # most important info
+                viral_family, type, # good info
+                continent,year_agg,  # for visualizations
+                from_tick, tick_genus, # for networks
+                references, sample_type,viruses, iso3c) %>% # info may be helpful for filtering
+  rename(admin = sampling_country)
+```
+
+##Step 6. Merge aggregated country counts with relevant ZOVER metadata
+
+```{r}
+zover_toprecognized_complete <- zover_toprecognized_countryaggregate %>% 
+  right_join(zover_toprecognized_slim, by = "admin") # keep all rows in zover_toprecog_zlim
+      
+```
+
+##Step 7. Run some basic summaries for Methods
+```{r}
+zover_toprecognized_complete %>% 
+  group_by(viral_family) %>% 
+  tally() # 8 virual families
+
+zover_toprecognized_complete %>% 
+  group_by(fix_viruses,type) %>% 
+  tally()  %>% 
+  filter(str_detect(type, "DNA"))
+
+
+zover_toprecognized_complete %>% 
+  group_by(fix_viruses,type) %>% 
+  tally()  %>% 
+  filter(str_detect(type, "ssRNA"))
+
+
+zover_toprecognized_complete %>% 
+  group_by(tick_genus) %>% 
+  tally() %>% 
+  filter(tick_genus != "Argas" &
+           tick_genus != "N/A")
+
+
+zover_toprecognized_complete %>% 
+  group_by(fix_viruses) %>% 
+  tally() 
+
+
+```
+
+##Step 8. Add citation counts using easyPubMed
+
+```{r}
+
+## check which version gets more hits
+get_pubmed_ids("Tick-borne encephalitis")$Count
+# African swine 4125 / African swine fever 3474
+# Alkhumra hemorrhagic 34 / Alkhumra hemorrhagic fever 32
+# Bourbon 724 / Bourbon virus 43
+# Colorado tick 581 / Colorado tick fever 288
+# Crimean-congo hemorrhagic 2131 / Crimean-congo hemorrhagic fever 2119
+# Deer tick 10316 / Deer tick virus 1590
+# Heartland 3364 / Heartland virus 111
+# Jingmen tick 56 / Jingmen tick virus 56
+# Kyasanur forest 298 / Kyasanur forest disease 297
+# Lumpy skin 711 / Lumpy skin disease 681
+# Nairobi sheep 399 / Nairobi sheep disease 226
+# Powassan 411 / Powassan virus 4211
+# Severe fever with thrombocytopenia syndrome 1983 / Severe fever with thrombocytopenia syndrome virus 1367
+# Tick-borne encephalitis 6561 / Tick-borne encephalitis virus 4954 
+
+
+## pull list of names
+toprecognized_list <- zover_toprecognized_complete %>% 
+  group_by(fix_viruses) %>% 
+  slice(1) %>% 
+  dplyr::select(fix_viruses) %>% 
+  # fix names to match NCBI Taxonomy Browser
+  # https://www.ncbi.nlm.nih.gov/Taxonomy/Browser/wwwtax.cgi
+  mutate(fix_viruses = case_when(fix_viruses == "African swine fever virus" ~ "African swine",
+                                 fix_viruses == "Alkhumra hemorrhagic fever virus" ~ "Alkhumra hemorrhagic",
+                                 fix_viruses == "Colorado tick fever" ~ "Colorado tick fever",
+                                 fix_viruses == "Crimean-Congo Hemorrhagic fever" ~ "Crimean-Congo hemorrhagic fever",
+                                 fix_viruses == "Deer tick virus" ~ "Deer tick virus",
+                                 fix_viruses == "Kyasanur Forest disease virus" ~ "Kyasanur forest disease",
+                                 fix_viruses == "Lumpy skin disease" ~ "Lumpy skin disease",
+                                 fix_viruses == "Nairobi sheep disease virus" ~ "Nairobi sheep disease",
+                                 fix_viruses == "Severe fever with thrombocytopenia syndrome" ~ "Severe fever with thrombocytopenia syndrome",
+                                 fix_viruses == "Tick-borne encephalitis virus" ~ "Tick-borne encephalitis",
+                                 TRUE ~ fix_viruses))
+
+
+## collect citations per virus species
+# one way of doing this
+# cites = c()
+# for(i in 1:length(toprecognized_list$fix_viruses)) {
+#   counts = as.numeric(as.character(get_pubmed_ids(gsub("_","-", toprecognized_list$fix_viruses[i]))$Count))
+#   cites[i] = counts
+#   print(paste(i,"/", nrow(toprecognized_list)))
+# }
+
+# looks for variations in virus or viral
+vcites = c()
+for(i in 1:length(toprecognized_list$fix_viruses)) {
+  x = gsub("_","-", toprecognized_list$fix_viruses[i])
+  x = paste("(",x,")",sep="")
+  x = paste(x,"AND (virus OR viral)")
+  counts = as.numeric(as.character(get_pubmed_ids(x)$Count))
+  vcites[i]=counts
+  print(paste(i,"/", nrow(toprecognized_list)))
+}
+
+
+# turn into dataframe
+# virus citations
+vcites_df <- as.data.frame(vcites)
+# bind names with virus citations
+toprecognized_pubmedcitations <- cbind(toprecognized_list, vcites_df)
+
+```
+
+##Step 9. Aggregate citation count per country
+```{r}
+
+zover_toprecognized_countryaggregate_pubmedcitations <- 
+zover_toprecognized_complete %>% 
+  mutate(fix_viruses = case_when(fix_viruses == "African swine fever virus" ~ "African swine",
+                                 fix_viruses == "Alkhumra hemorrhagic fever virus" ~ "Alkhumra hemorrhagic",
+                                 fix_viruses == "Colorado tick fever" ~ "Colorado tick fever",
+                                 fix_viruses == "Crimean-Congo Hemorrhagic fever" ~ "Crimean-Congo hemorrhagic fever",
+                                 fix_viruses == "Deer tick virus" ~ "Deer tick virus",
+                                 fix_viruses == "Kyasanur Forest disease virus" ~ "Kyasanur forest disease",
+                                 fix_viruses == "Lumpy skin disease" ~ "Lumpy skin disease",
+                                 fix_viruses == "Nairobi sheep disease virus" ~ "Nairobi sheep disease",
+                                 fix_viruses == "Severe fever with thrombocytopenia syndrome" ~ "Severe fever with thrombocytopenia syndrome",
+                                 fix_viruses == "Tick-borne encephalitis virus" ~ "Tick-borne encephalitis",
+                                 TRUE ~ fix_viruses)) %>% 
+left_join(toprecognized_pubmedcitations, by = "fix_viruses") %>% 
+  group_by(admin) %>% 
+  summarise(pubmedcitations_percounty_total = sum(vcites))
+```
+
+##Step 10. Give each country a citation weight
+
+Merge pubmed citation list with complete zover top recognized list
+```{r}
+zover_toprecognized_complete_pubmed <- zover_toprecognized_complete %>% 
+  left_join(zover_toprecognized_countryaggregate_pubmedcitations, by = "admin")
+```
+
+##Step 11. Write csv for top reported tick-borne viruses
+```{r}
+#write.csv(zover_toprecognized_complete_pubmed , file = "tickviruses/clean/zover_toprecognized_complete_pubmed _20240921.csv")
+```
+
+
+
+
+Create a dataframe just for BRT analysis
+
