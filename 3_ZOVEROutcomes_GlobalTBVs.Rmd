@@ -39,10 +39,10 @@ library(easyPubMed)
 
 ## upload necessary data
 # clean-ish ZOVER data for all viruses
-zover_all <- read.csv("tickviruses/clean/tick_viruses_clean_20240921.csv")
+zover_all <- read.csv("tickviruses/clean/zover_allviruses_20240921.csv")
 
 # 
-worldmap <- ne_countries(scale = "large", type = "countries", returnclass = "sf") %>% 
+worldmap <- ne_countries(scale = "large", type = "countries", returnclass = "sf") 
 ```
 
 ##Step 1. Find what are the top reported TBVs on ZOVER (n > 30)
@@ -337,7 +337,36 @@ zover_toprecognized_complete_pubmed <- zover_toprecognized_complete %>%
 ```
 
 
+Summary statistics for Results section 
+
+```{r}
+
+## how many countries have reported tbv of this list?
+zover_toprecognized_complete_pubmed %>% 
+  group_by(admin) %>% 
+  slice(1) %>% 
+  filter(tbv_presence == 1) # 59 countries
 
 
-Create a dataframe just for BRT analysis
+## which country has the most type of tbvs?
+zover_toprecognized_complete_pubmed %>% 
+  group_by(admin) %>% 
+  summarise(count = n_distinct(fix_viruses)) %>% 
+  arrange(desc(count)) #%>% 
+  #filter(count == 1)
+
+## which country had total most tbv?
+zover_toprecognized_complete_pubmed %>% 
+  group_by(admin) %>% 
+  slice(1) %>% 
+  summarise(count = sum(tbv_total)) %>% 
+  arrange(desc(count)) 
+
+## which was the most commonly reported tbv?
+zover_toprecognized %>% 
+  group_by(fix_viruses) %>% 
+  tally() %>% 
+  arrange(desc(n))
+```
+
 
