@@ -1,0 +1,462 @@
+---
+title: "Data Cleaning - Trait Matrix"
+output: html_document
+date: "2025-10-30"
+---
+
+**Manuscript title:** Ecological and socioeconomic factors associated with globally reported tick-borne viruses
+
+**Corresponding author:** Samantha Sambado (sbsambado at ucsb.edu, ssambado at stanford.edu)
+
+**Purpose**
+To transform raw data from repositories into variables that will be part of global trait matrix which will be in the final file: global_trait_matrix_20251031.csv
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## upload necessary packages
+library(readr)
+library(openxlsx)
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(sf)
+library(terra)
+library(rnaturalearth)
+library(rworldmap)
+library(rgho)
+library(wbstats)
+library(naniar)
+
+
+## upload necessary data
+# (the rest of the data can be uploaded via API)
+ecoregion_raw <- st_read("trait_matrix/raw/terr-ecoregions-TNC/tnc_terr_ecoregions.shp")
+koepp_raw <- terra::rast("trait_matrix/raw/koeppen-geiger/Map_KG-Global/KG_1986-2010.grd")
+vegdisim_raw <- terra::rast("trait_matrix/raw/vegetation_dissimilarity/Dissimilarity_01_05_5km_uint32.tif")
+livestock_raw <- terra::rast("trait_matrix/raw/livestock/6_Ct_2015_Aw.tif")
+socialvulnerability_raw <- terra::rast("trait_matrix/raw/social_vulnerability/povmap-grdi-v1-geotiff/povmap-grdi-v1_SHDI.tif")
+humpopcount_raw <- terra::rast("trait_matrix/raw/humanpop_count/gpw_v4_population_count_rev11_2015_2pt5_min.tif")
+acled_raw <- read.xlsx("trait_matrix/raw/conflictexposure_worldpopacled/acled_conflictexposure_1727473814.xlsx", sheet = "Results")
+fao_raw <- read.csv("trait_matrix/raw/worldbank/FAO_RP_5172_WIDEF.csv")
+
+
+```
+
+#Step 1. Upload spatial boundaries
+```{r}
+## majority of spatial analysis will use rnatural world boundaries
+worldmap <- ne_countries(scale = "large", type = "countries", returnclass = "sf")
+worldmap_slim <- worldmap %>% dplyr::select(admin, iso_a3)
+
+## was reccommend for koeppen-geiger map to use RWorldMap
+worldmap_rwp <- getMap()
+worldmap_rwp_vector <- terra::vect(worldmap_rwp)
+```
+
+
+#Step 2. Upload raw data from various sources & wrangle into usable format
+
+####World Bank data
+```{r}
+# state which WB indicators I want
+indicators <- c(wb_forested_pct = "AG.LND.FRST.ZS",
+                wb_livestockprod_index = "AG.PRD.LVSK.XD",
+                #wb_pestimports_total = "BM.AG.PEST.CD", 
+                wb_gradvetsforestag_pct = "SE.TER.GRAD.AG.ZS",
+                wb_gradhealthwelf_pct = "SE.TER.GRAD.HL.ZS",
+                wb_adultlit_rate = "SE.ADT.LITR.ZS",
+                wb_expendedu_pct = "NY.ADJ.AEDU.GN.ZS",
+                wb_expendhealth_pct = "SH.XPD.CHEX.GD.ZS",
+                wb_gini_index = "SI.POV.GINI",
+                wb_povertyline_pct = "SI.POV.NAHC",
+                wb_accesselect_pct ="EG.ELC.ACCS.ZS",
+                wb_landarea_sqkm = "AG.LND.TOTL.K2",
+                wb_urbanpop_pct = "SP.URB.TOTL.IN.ZS",
+                wb_employedag = "SL.AGR.EMPL.ZS")
+
+# create names for later cleaning
+rename_map <- setNames(indicators, names(indicators))
+
+
+## manually fix pest imports because they are more sporadically reported pre-2015
+wb_pest <- wb_data(indicator = "BM.AG.PEST.CD",
+        start_date = 1990,
+        end_date = 2020) %>% 
+  group_by(iso3c, country) %>% 
+  summarise(wb_pestimportstot_mean = mean(BM.AG.PEST.CD, na.rm = TRUE)) %>% 
+  ## these countries 2 letter codes wont work with rnatural earth map
+  mutate(iso3c = recode(iso3c,
+                        "FR" = "FRA",
+                        "NO" = "NOR",
+                        "SO" = "SOM",
+                        "HK" = "HKG",
+                        "TW" = "TWN",
+                        "MO" = "MAC"))
+
+
+# pull down WB data
+wb_raw <- wb_data(indicator = indicators,
+                  start_date = 2015,
+                  end_date = 2023,
+                  return_wide = FALSE)
+
+# wrangle data
+wb_calculated <- wb_raw %>% 
+  group_by(iso3c, country, indicator_id) %>% 
+  summarise(value_mean = mean(value, na.rm = TRUE), .groups = "drop") %>% 
+  dplyr::select(country, iso3c, indicator_id, value_mean) %>% 
+  pivot_wider(names_from = indicator_id,
+              values_from = value_mean) %>% 
+  rename(!!!rename_map) %>% 
+  ## these countries 2 letter codes wont work with rnatural earth map
+  mutate(iso3c = recode(iso3c,
+                        "FR" = "FRA",
+                        "NO" = "NOR",
+                        "SO" = "SOM",
+                        "HK" = "HKG",
+                        "TW" = "TWN",
+                        "MO" = "MAC")) %>% 
+  left_join(wb_pest, by = c("country","iso3c"))
+
+
+```
+
+
+####World Health Organization data
+```{r}
+# Average annual number of people requiring mass treatment for at least one Neglected Tropical Disease (NTD)
+who_ntdrx <- get_gho_data(code = "SDGNTDTREATMENT")
+
+# wrangle
+who_ntdrx_mean <- who_ntdrx %>% 
+  clean_names() %>% 
+  as.data.frame() %>% 
+  group_by(country) %>% 
+  summarise(who_reportntd_mean = mean(numeric_value, na.rm = TRUE)) %>% 
+  filter(!is.na(country))  %>% 
+  mutate(iso3c = countrycode(country, "genc3c", "iso3c")) %>% 
+  dplyr::select(iso3c, who_reportntd_mean) %>% 
+  rename(iso_a3 = iso3c)
+```
+
+####SEDAC
+```{r}
+# population counts
+# extract mean disim per country
+worldmap_slim$humpopcount_mean <- exactextractr::exact_extract(humpopcount_raw, worldmap_slim, fun = "sum")
+
+# wrangle
+humpopcount_calculated <- worldmap_slim %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(admin, iso_a3, humpopcount_mean) %>% 
+  rename(sedac_popcounts_sum = "humpopcount_mean")
+
+```
+
+####GRDI SHDI
+```{r}
+# Social vulnerability
+worldmap_slim$shdi_mean <- exactextractr::exact_extract(socialvulnerability_raw, worldmap_slim, fun = "mean")
+
+# wrangle
+shdi_calculated <- worldmap_slim %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(admin, iso_a3, shdi_mean) %>% 
+  rename(grdi_shdi_mean = "shdi_mean")
+
+
+```
+
+####Livestock density
+```{r}
+# mean density
+worldmap_slim$livestock_mean <- exactextractr::exact_extract(livestock_raw, worldmap_slim, fun = "mean") # this was sum but changed it
+
+# wrangle
+livestock_calculated <- worldmap_slim %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(admin, iso_a3, livestock_mean) %>% 
+  rename(glw_livestockdensity_mean = "livestock_mean")
+
+```
+
+####Vegetation dissimilarity
+```{r}
+# vegetation heterogeneity
+worldmap_slim$vegdisim_mean <- exactextractr::exact_extract(vegdisim_raw, worldmap_slim, fun = "mean") # this was sum but changed it
+
+
+# wrangle
+vegdisim_calculated <- worldmap_slim %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(admin, iso_a3, vegdisim_mean) %>%  
+  mutate(vegdisim_mean = (vegdisim_mean*0.0001)) %>% # according to Tuanmu 2015 this conversion is necessary look at trait matrix notes
+  rename(ee_vegdisim_mean = "vegdisim_mean")
+
+```
+
+####Ecoregions
+```{r}
+# extract ecoregion name
+ecoregion_name <- ecoregion_raw[, "ECO_NAME"]
+
+# find intersection of country boundary and ecoregion
+sf_use_s2(FALSE) #returns the value of this variable before (re)setting it
+ecoregion_intersection <- st_intersection(ecoregion_name, worldmap_slim)
+
+# wrangle data
+ecoregion_calculated <- ecoregion_intersection %>% 
+  st_drop_geometry() %>% 
+  group_by(iso_a3, ECO_NAME) %>% 
+  tally() %>% 
+  group_by(iso_a3) %>% 
+  tally() %>% 
+  rename(wwf_ecoreg_total = n)
+
+```
+
+####Koppen-Geiger climate classification zones
+```{r}
+# find modal koppen-gieger (KG) climate zone per country
+kopp_mode <- terra::extract(koepp_raw, worldmap_rwp_vector, fun = "modal")
+
+# match with admin name and KG layer
+kopp_mode_merge <- as.data.frame(worldmap_rwp_vector$ADMIN) %>% 
+  mutate(ID = seq(1:243)) %>% 
+  merge(kopp_mode, by = "ID")
+
+names(kopp_mode_merge) <- c("country_ID", "country_name", "ID")
+
+# translate KG ID into actual names
+# legend must correspond to all climate classes, insert placeholders from Wiki
+kopp_legend <- as.data.frame(seq(1, 32, 1))
+
+kopp_legend$climate <- c('Af', 'Am', 'As', 'Aw', 'BSh', 'BSk', 'BWh', 'BWk', 'Cfa', 'Cfb','Cfc', 'Csa', 'Csb', 'Csc', 'Cwa','Cwb', 'Cwc', 'Dfa', 'Dfb', 'Dfc','Dfd', 'Dsa', 'Dsb', 'Dsc', 'Dsd','Dwa', 'Dwb', 'Dwc', 'Dwd', 'EF','ET', 'Ocean')
+names(kopp_legend) <- c("ID", "climate_zone")
+
+# tie it all together
+kopp_mode_calculated <- kopp_mode_merge %>% 
+  merge(kopp_legend, by = "ID") %>% 
+  rename(admin = "country_name",
+         kopp_climatezone_name = "climate_zone",
+         kopp_climatezone_ID = "ID")
+
+
+```
+
+####ACLED
+```{r}
+## total conflict and percent of population exposed to conflict
+acled_calculated <- acled_raw %>%
+  clean_names() %>% 
+  dplyr::select(country, pct_of_country_population, total_events) %>% 
+  rename(admin = country,
+         acled_conflictpopexposure_pct = pct_of_country_population,
+         acled_conflictevents_total = total_events)
+
+
+```
+
+####ISVA Chapter
+```{r}
+# International Veterinary Student's Association
+# (https://www.ivsa.org/membership-directory/corporate)
+# I looked through the directory of chapters and assigned 1 for countries listed and 0 for not listed
+
+ivsa_chapter_present <- worldmap_slim %>% 
+  st_drop_geometry() %>% 
+  mutate(ivsa_chapter = case_when(admin == "Bangladesh" ~ 1, # Asia Region
+                                  admin == "China" ~ 1,
+                                  admin == "Indonesia" ~ 1,
+                                  admin == "Japan" ~ 1,
+                                  admin == "Malaysia" ~ 1,
+                                  admin == "Nepal" ~ 1,
+                                  admin == "Philippines" ~ 1,
+                                  admin == "South Korea" ~ 1,
+                                  admin == "Taiwan" ~ 1,
+                                  # Europe region
+                                  admin == "Austria" ~ 1,
+                                  admin == "Belgium" ~ 1,
+                                  admin == "Bosnia and Herzegovina" ~ 1,
+                                  admin == "Bulgaria" ~ 1,
+                                  admin == "Croatia" ~ 1,
+                                  admin == "Czechia" ~ 1, # was Czech Republic in IVSA
+                                  admin == "Denmark" ~ 1,
+                                  admin == "Estonia" ~ 1,
+                                  admin == "Finland" ~ 1,
+                                  admin == "Germany" ~ 1,
+                                  admin == "Greece" ~ 1,
+                                  admin == "Hungary" ~ 1,
+                                  admin == "Italy" ~ 1,
+                                  admin == "Latvia" ~ 1,
+                                  admin == "Norway" ~ 1,
+                                  admin == "Romania" ~ 1,
+                                  admin == "Slovenia" ~ 1,
+                                  admin == "Sweden" ~ 1,
+                                  admin == "Switzerland" ~ 1,
+                                  admin == "Netherlands" ~ 1, # was The Netherlands in IVSA
+                                  admin == "Turkey" ~ 1,
+                                  admin == "Ukraine" ~ 1,
+                                  # Middle East and Northern Africa region
+                                  admin == "Algeria" ~ 1,
+                                  admin == "Egypt" ~ 1,
+                                  admin == "Sudan" ~ 1,
+                                  # Pacific region
+                                  # Subsaharan region
+                                  admin == "Ghana" ~ 1,
+                                  admin == "Malawi" ~ 1,
+                                  admin == "Namibia" ~ 1,
+                                  admin == "Nigeria" ~ 1,
+                                  admin == "Rwanda" ~ 1,
+                                  admin == "South Africa" ~ 1,
+                                  admin == "Uganda" ~ 1,
+                                  # The americas
+                                  admin == "Colombia" ~ 1,
+                                  admin == "Mexico" ~ 1,
+                                  admin == "Panama" ~ 1,
+                                  admin == "Peru" ~ 1,
+                                  admin == "United States of America" ~ 1, # was USA in IVSA
+                                  TRUE ~ 0))
+
+
+```
+
+####Pesticide use per capita (FAO)
+```{r}
+# pesticides use per capita
+# unit_measure (KM_PS) kilometers per person
+
+fao_calculated <- fao_raw %>% 
+  clean_names()%>% 
+  rowwise() %>% 
+  mutate(fao_pestusecapita_kmp = mean(c_across(x2010:x2023), na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  dplyr::select(ref_area_label, ref_area,fao_pestusecapita_kmp) %>% 
+  rename(admin = ref_area_label,
+         iso_a3 = ref_area)
+
+```
+
+ 
+#Step 3. Merge covariates with admin codes
+
+```{r}
+# challenge is having admin name/isoa3 code align with each other
+# if I had raster data, they were extracted to world_map so their names match up
+# but for non-raster data, some admin names were different so went with iso_a3 code
+# however, there are some iso_a3 codes that are tricky, partly bc france has many territories but i fixed
+worldmap_slim_clean <- worldmap_slim %>% # 258
+  st_drop_geometry() %>% 
+  dplyr::select(-c(humpopcount_mean:vegdisim_mean))  %>% # get rid of columns that were made with exact_extract
+  # fix codes for easier merging
+  mutate(iso_a3 = case_when(admin == "France" ~ "FRA",
+                            admin == "Norway" ~ "NOR",
+                            admin == "Kosovo" ~ "XKX",
+                            TRUE ~ iso_a3)) %>% 
+  # now merge all the different datasets
+  left_join(wb_calculated, by = c("iso_a3" = "iso3c")) %>%  
+  left_join(who_ntdrx_mean, by = "iso_a3") %>% 
+  left_join(humpopcount_calculated %>% filter(iso_a3!= "-99"), by = "iso_a3") %>% 
+  left_join(shdi_calculated %>% filter(iso_a3!= "-99"), by = "iso_a3") %>% 
+  left_join(livestock_calculated %>% filter(iso_a3!= "-99"), by = "iso_a3") %>% 
+  left_join(vegdisim_calculated %>% filter(iso_a3!= "-99"), by = "iso_a3") %>% 
+  left_join(ecoregion_calculated %>% filter(iso_a3!= "-99"), by = "iso_a3") %>% 
+  left_join(ivsa_chapter_present  %>% filter(iso_a3!= "-99"), by = "iso_a3") %>% 
+  left_join(fao_calculated %>% dplyr::select(-admin), by = "iso_a3") %>%
+  # fix admin after all those joins
+  rename(admin = admin.x) %>% 
+  dplyr::select(-ends_with(".x"),
+                -ends_with(".y")) %>% 
+  left_join(kopp_mode_calculated %>% dplyr::select(-country_ID), by = "admin") %>% 
+  left_join(acled_calculated, by = "admin") %>% 
+  # okay now i need to slim this down a bit
+  # want to keep Taiwan but WB doesn't give it land area
+  mutate(wb_landarea_sqkm = case_when(admin == "Taiwan" ~ NaN,
+                                      TRUE ~ wb_landarea_sqkm)) %>% 
+  filter(!is.na(wb_landarea_sqkm)) %>%   # 215 countries
+  # these countries values didn't merge bc of naming so I manually looked them up *on World Bank* & added them, 
+  # some I made the assumption there was high literacy rate and imputed 99.9 to help with coverage of this covariate for future analysis
+  mutate(wb_adultlit_rate = case_when(admin == "France" ~ 99.9,
+                                      admin == "Norway" ~ 99.9,
+                                      admin == "American Samoa" ~ 99.03663,
+                                      admin == "Australia" ~ 99.9,
+                                      admin == "Belgium" ~ 99.9,
+                                      admin == "Croatia" ~ 99.45,
+                                      admin == "Denmark" ~ 99.9,
+                                      admin == "Ethiopia" ~ 51.77118, 
+                                      admin == "Finland" ~ 99.9, 
+                                      admin == "Germany" ~ 99.9,
+                                      admin == "Guatemala" ~ 80.33402,
+                                      admin == "Guinea-Bissau" ~ 49.74058, 
+                                      admin == "Guyana" ~ 87.83487, 
+                                      admin == "Haiti" ~ 61.69135, 
+                                      admin == "Iceland" ~ 99.9, 
+                                      admin == "Ireland" ~ 99.9, 
+                                      admin == "Israel" ~ 99.9,
+                                      admin == "Japan" ~ 99.9, 
+                                      admin == "Liberia" ~ 48.30136,
+                                      admin == "Luxembourg" ~ 99.9, 
+                                      admin == "Monaco" ~ 99.9, 
+                                      admin == "Myanmar" ~ 82.31057,
+                                      admin == "Netherlands" ~ 99.9, 
+                                      admin == "New Zealand" ~ 99.9, 
+                                      admin == "Norway" ~ 99.9, 
+                                      admin == "Poland" ~ 99.8, 
+                                      admin == "Somalia" ~ 41.025, 
+                                      admin == "South Korea" ~ 99.9,
+                                      admin == "Sweden" ~ 99.9,
+                                      admin == "Switzerland" ~ 99.9, 
+                                      admin == "United Arab Emirates" ~ 98.06476, 
+                                      admin == "United Kingdom" ~ 99.9,
+                                      admin == "Austria" ~ 99.9,
+                                      admin == "United Republic of Tanzania" ~ 76.45213,
+                                      admin == "United States of America" ~ 99.9, 
+                                      admin == "Canada" ~ 99.9,
+                                      admin == "Hong Kong S.A.R." ~ 99.9,
+                                      TRUE ~ wb_adultlit_rate)) %>% 
+  mutate(acled_conflictpopexposure_pct = case_when(admin == "United Republic of Tanzania" ~ 0.061852233,
+                                                   admin == "Republic of the Congo" ~ 0.250024890, 
+                                                   admin == "Czechia" ~ 0.063629911, 
+                                                   admin == "United States of America" ~ 0.060712241, 
+                                                   admin == "Republic of Serbia" ~ 0.109959253, 
+                                                   admin == "Democratic Republic of the Congo" ~ 0.224494234,
+                                                   TRUE ~ acled_conflictpopexposure_pct),
+         
+         acled_conflictevents_total = case_when(admin == "United Republic of Tanzania" ~ 17,
+                                                   admin == "Republic of the Congo" ~ 18, 
+                                                   admin == "Czechia" ~ 9, 
+                                                   admin == "United States of America" ~ 386, 
+                                                   admin == "Republic of Serbia" ~ 17, 
+                                                   admin == "Democratic Republic of the Congo" ~ 10082,
+                                                TRUE ~ acled_conflictevents_total)) %>% 
+  mutate(wb_povertyline_pct = case_when(admin == "India" ~ 33.55,
+                                      admin == "Lebanon" ~ 28,
+                                      admin == "Syria" ~ 32.65,
+                                      admin == "Republic of the Congo" ~ 45.8,
+                                      admin == "Cambodia" ~ 32.55,
+                                      admin == "Sudan" ~ 46.5,
+                                      admin == "Eritrea" ~ 69,
+                                      admin == "Haiti" ~ 61.16667,
+                                      admin == "Australia" ~ 13.50,
+                                      TRUE ~ wb_povertyline_pct)) 
+  
+
+```
+
+#Step 4. Check for missing data
+(may have to come back and add some values manually)
+```{r}
+# check if some are missing
+# many islands are missing data but they get dropped in the analysis so i'm not too worried
+vis_miss(worldmap_slim_clean)  
+
+```
+
+#Step 5. Save global trait matrix!
+```{r}
+# save it
+worldmap_slim_clean %>% 
+   mutate_all(~ifelse(is.nan(.), NA, .)) %>% # some NaNs are lurking
+  write.csv("trait_matrix/clean/global_trait_matrix_20251031.csv")
+```

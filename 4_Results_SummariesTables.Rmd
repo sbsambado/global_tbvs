@@ -1,0 +1,244 @@
+---
+title: "Results for Data Summaries and Tables"
+output: html_document
+date: "2025-11-03"
+---
+
+**Manuscript title:** Ecological and socioeconomic factors associated with globally reported tick-borne viruses
+
+**Corresponding author:** Samantha Sambado (sbsambado at ucsb.edu, ssambado at stanford.edu)
+
+**Purpose**
+To re-create results from text and tables in manuscript.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##upload necessary packages
+library(ggplot2)
+library(tidyverse)
+
+##upload neccessary data
+zover_toprecognized_slim_pubmed <- read.csv("tickviruses/clean/zover_toprecognized_slim_pubmed_20251103.csv")
+```
+
+#Main Text
+
+##Results
+
+###Dataset description
+```{r}
+
+## how many countries have reported tbv of this list?
+zover_toprecognized_complete_pubmed %>% 
+  group_by(admin) %>% 
+  slice(1) %>% 
+  filter(tbv_presence == 1) # 59 countries
+
+
+## which country has the most type of tbvs?
+zover_toprecognized_complete_pubmed %>% 
+  group_by(admin) %>% 
+  summarise(count = n_distinct(fix_viruses)) %>% 
+  arrange(desc(count)) #%>% 
+  #filter(count == 1)
+
+## which country had total most tbv?
+zover_toprecognized_complete_pubmed %>% 
+  group_by(admin) %>% 
+  slice(1) %>% 
+  summarise(count = sum(tbv_total)) %>% 
+  arrange(desc(count)) 
+
+## which was the most commonly reported tbv?
+zover_toprecognized %>% 
+  group_by(fix_viruses) %>% 
+  tally() %>% 
+  arrange(desc(n))
+```
+
+###BRT results
+(TBV presence model)
+```{r}
+
+brt_result_presence <- readRDS("brt_result_presence_20251103.rds")
+
+###Metrics
+# get rid of runs that failed to converge
+keep <- which(!is.na(sapply(brt_result_presence, function(x) x$testAUC)))
+brt_result_presence <- brt_result_presence[keep]
+
+### model metrics
+## get mean AUC
+mean(sapply(brt_result_presence, function(x) x$testAUC)) ## 0.8294715
+std.error(sapply(brt_result_presence, function(x) x$testAUC)) # 0.004164542
+
+## get mean sensitivity 
+mean(sapply(brt_result_presence, function(x) x$sen)) # 0.4383938
+std.error(sapply(brt_result_presence, function(x) x$sen)) #  0.01094209
+
+## get mean specificity
+mean(sapply(brt_result_presence, function(x) x$spec)) # 0.9044967
+std.error(sapply(brt_result_presence, function(x) x$spec)) # 0.004977494
+
+
+###VIF results
+# pull out variable relative influence
+vinf <- lapply(brt_result_presence, function(x) x$rinf)
+response_vinf <- do.call(rbind, vinf)
+
+## aggreagte mean, se and rel.inf
+vinf_data <- data.frame(aggregate(rel.inf ~ var, data = response_vinf , mean),
+                        aggregate(rel.inf ~ var, data = response_vinf, std.error)["rel.inf"],
+                        aggregate(rel.inf ~ var, data = response_vinf, var)["rel.inf"])
+names(vinf_data) <- c("var", "rel.inf", "rse", "rvar")
+
+vinf_data <- vinf_data[order(vinf_data$rel.inf, decreasing = T),]
+
+## calculate vif metrics
+mean(vinf_data$rel.inf) # 4.166828
+var(vinf_data$rel.inf) # 35.6388
+
+# rnak 
+vinf_data$response_rank <- 1:nrow(vinf_data)
+
+```
+
+(Citation model)
+```{r}
+# upload model results
+brt_result_citation <- readRDS("brt_result_citation_20251103.rds")
+
+# drop runs that failed to converge
+keep <- which(!is.na(sapply(brt_result_citation, function(x) x$rmse)))
+brt_result_citation <- brt_result_citation[keep]
+
+## summary metrics
+rmse_mean <- mean(sapply(brt_result_citation, function(x) x$rmse)) # 4.309495
+rmse_se <- std.error(sapply(brt_result_citation, function(x) x$rmse)) # 0.02131648
+
+mae_mean <- mean(sapply(brt_result_citation, function(x) x$mae)) # 3.113222
+mae_se <- std.error(sapply(brt_result_citation, function(x) x$mae)) # 0.01619675
+
+cor_mean <- mean(sapply(brt_result_citation, function(x) x$correlation)) # 0.5043058
+cor_se <- std.error(sapply(brt_result_citation, function(x) x$correlation)) # 0.007225013
+```
+
+#Supplementary Tables
+
+###Table 1
+tick-borne viruses per country
+```{r}
+zover_topviruses <- read.csv("tickviruses/clean/zover_toprecognized_complete_pubmed _20240921.csv") %>% dplyr::select(-X)
+
+table_s_1 <- zover_topviruses %>% 
+  group_by(admin, iso_a3, fix_viruses) %>% 
+  tally() %>% 
+  mutate(fix_viruses = case_when(fix_viruses == "Lumpy skin disease" ~ "LSD",
+                                        fix_viruses == "African swine fever virus" ~ "ASF",
+                                        fix_viruses == "Colorado tick fever" ~ "CTF",
+                                        fix_viruses == "Crimean-Congo Hemorrhagic fever" ~ "CCHF",
+                                        fix_viruses == "Severe fever with thrombocytopenia syndrome" ~ "SFTS",
+                                        fix_viruses == "Nairobi sheep disease virus" ~ "NSD",
+                                        fix_viruses == "Sawgrass virus" ~ "SGV",
+                                        fix_viruses == "Heartland virus" ~ "HLV",
+                                        fix_viruses == "Bhanja virus" ~ "BHV",
+                                        fix_viruses == "Bourbon virus" ~ "BOV",
+                                        fix_viruses == "Jingmen tick virus" ~ "JTV",
+                                        fix_viruses == "Powassan virus" ~ "PWV",
+                                        fix_viruses == "Tick-borne encephalitis virus" ~ "TBE",
+                                        fix_viruses == "Alkhumra hemorrhagic fever virus" ~ "AHF",
+                                        fix_viruses == "Kyasanur Forest disease virus" ~ "KFD",
+                                        fix_viruses == "Deer tick virus" ~ "DTF",
+                                        fix_viruses == "Omsk hemorrhagic fever virus" ~ "OHF",
+                                        fix_viruses == "Louping ill virus" ~ "LIV",
+                                        TRUE ~ fix_viruses)) %>% 
+    pivot_wider(names_from = fix_viruses, values_from = n) %>% 
+  mutate_all(~ifelse(is.na(.), 0, .)) %>% 
+  filter(admin != "ND") %>% 
+  ungroup()
+
+#write.table(table_s_1, file = "table_s_1.txt", sep = ",")
+
+```
+
+###Table 2
+variable name, coverage, range
+```{r}
+brt_matrix_data <- read.csv("zover_matrix_formatted_preBRT_20251103.csv")
+
+table_s_2 <- brt_matrix_data %>%
+  dplyr::select(where(is.numeric)) %>%            
+  pivot_longer(cols = everything(), 
+               names_to = "variable", 
+               values_to = "value") %>%     
+  group_by(variable) %>%
+  summarise(
+    coverage = round(mean(!is.na(value)) * 100,1),
+    min = round(min(value, na.rm = TRUE),0),
+    max = round(max(value, na.rm = TRUE),0),
+    .groups = "drop") %>% 
+  mutate(range = paste(min, max, sep = "-")) %>% 
+  mutate(var_pretty = case_when(variable== "kopp_climatezone_name" ~ "Climate Zone", 
+                              variable== "wb_gini_index" ~ "Gini Index", 
+                              variable== "log_sedac_popcounts_sum" ~ "Pop Counts", 
+                              variable== "log_fao_pestusecapita_kmp" ~ "Pesticide Use", 
+                              variable== "log_wb_landarea_sqkm" ~ "Land Area", 
+                              variable== "log_wb_livestockprod_index" ~ "Livestock Index", 
+                              variable== "ivsa_chapter" ~ "IVSA", 
+                              variable== "log_acled_conflictevents_total" ~ "Conflict (total)", 
+                              variable== "wb_povertyline_pct" ~ "Below Poverty Line", 
+                              variable== "acled_conflictpopexposure_pct" ~ "Conflict (% exposed)",
+                              variable== "log_glw_livestockdensity_mean" ~ "Livestock Density",
+                              variable== "wb_gradvetsforestag_pct" ~ "% Ag/Vet/Forestry Grads",
+                              variable== "wb_urbanpop_pct" ~ "Urban Pop",
+                              variable== "wb_adultlit_rate" ~ "Adult Literacy",
+                              variable== "log_who_reportntd_mean" ~ "NTD Reports",
+                              variable== "wb_employedag" ~ "Ag Employment",
+                              variable== "wb_gradhealthwelf_pct" ~ "% Healthcare/Welfare Grads",
+                              variable== "wb_expendhealth_pct" ~ "Health Spending",
+                              variable== "grdi_shdi_mean" ~ "Social Vulnerability",
+                              variable== "wwf_ecoreg_total" ~ "Total Ecoregions",
+                              variable== "wb_forested_pct" ~ "Forested",
+                              variable== "wb_expendedu_pct" ~ "Education Spending",
+                              variable== "ee_vegdisim_mean" ~ "Habitat Fragmentation",
+                              variable== "wb_accesselect_pct" ~ "Access to Electricity",
+                              variable == "tbv_presence" ~ "Presence of TBV",
+                              variable == "tbv_total" ~ "Total TBV",
+                              variable == "log_pubmedcitations_percounty_total" ~ "Total Citations",
+                              TRUE ~ NA)) %>%
+  dplyr::select(-variable) %>% 
+  dplyr::select(var_pretty, coverage, range)
+
+#write.table(table_s_2, file = "table_s_2.txt", sep = ",")
+ 
+
+table_s_2 %>% 
+  arrange(desc(coverage))
+```
+
+###Table 4
+summary of variable relative influence
+```{r}
+vinf_data <- read.delim("vinf_data_20251103.txt",sep = ",")
+
+# mean and variance of all vars
+table_s_3 <- vinf_data %>% 
+  group_by(var) %>% 
+  summarise(across(where(is.numeric), ~ round(., 2))) %>% 
+  arrange(desc(rel.inf))
+
+
+#write.table(table_s_3, file = "table_s_3.txt", sep = ",")
+
+
+# mean and standard error of all vars
+# pull out variable relative influence
+vinf <- lapply(brt_result_presence, function(x) x$rinf)
+response_vinf <- do.call(rbind, vinf)
+mean(vinf_data$rel.inf)
+var(vinf_data$rel.inf) # 35.6388 or 
+# report standard error?
+vinf_data %>% 
+  summarise(mean_importance = mean(rel.inf), se_importance = sd(rel.inf) / sqrt(n()))
+```

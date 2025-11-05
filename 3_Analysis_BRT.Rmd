@@ -1,0 +1,545 @@
+---
+title: "Analysis - BRT"
+output: html_document
+date: "2025-11-03"
+---
+
+**Manuscript title:** Ecological and socioeconomic factors associated with globally reported tick-borne viruses
+
+**Corresponding author:** Samantha Sambado (sbsambado at ucsb.edu, ssambado at stanford.edu)
+
+**Purpose**
+To run boosted regression trees on cleaned data. Results from analysis will be in the final file: brt_result_presence_202501103_seed.rds
+
+Other important flat files include: 
++ zover_matrix_formatted_preBRT_20251103.csv (cleaned data for figures/tables)
++ vinf_data_20251103.txt (presence model results for VIF figures)
++ brt_result_citation_20251103.rds (citation model results for figures)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## upload necessary packages
+library(readr)
+library(tidyverse)
+library(naniar)
+library(gbm)
+library(rsample)
+library(ROCR)
+library(InformationValue)
+library(plotrix)
+
+## upload necessary data
+matrix_data <- read.csv("trait_matrix/clean/global_trait_matrix_20251031.csv") %>% dplyr::select(-X)
+topvirus_data <- read.csv("tickviruses/clean/zover_toprecognized_slim_pubmed_20251103.csv" #"tickviruses/clean/zover_toprecognized_complete_pubmed _20240921.csv"
+                          ) %>% dplyr::select(-X)
+
+```
+
+#Step 1. Merge top virus ZOVER data with global trait matrix
+```{r}
+# select only relevant information
+data_slim <- topvirus_data %>% 
+  group_by(admin) %>% 
+  slice(1) %>% 
+  dplyr::select(admin, iso_a3,tbv_presence, tbv_total, pubmedcitations_percounty_total) %>% 
+  # merge trait matrix
+  right_join(matrix_data, by = c("iso_a3")) %>% #, "admin"
+  mutate_at(vars(tbv_presence, tbv_total, pubmedcitations_percounty_total), ~ replace_na(.,0)) %>% 
+  rename(admin = admin.x) %>% 
+  dplyr::select(-c(kopp_climatezone_ID,humpopcount_mean, shdi_mean, livestock_mean, vegdisim_mean, admin.y)) 
+
+```
+
+#Step 2. Format for BRT
+```{r}
+brt_data_formatted <- data_slim %>% 
+  # make outcome a numeric
+  mutate(tbv_presence = ifelse(tbv_presence>0,1,0)) %>% 
+  # make characters factors
+  mutate(kopp_climatezone_name = as.factor(kopp_climatezone_name),
+         ivsa_chapter = as.factor(ivsa_chapter)) %>% 
+  mutate_at(vars(#glw_livestockdensity_mean,
+                 wb_livestockprod_index,
+                 sedac_popcounts_sum,
+                 wb_landarea_sqkm,
+                 acled_conflictevents_total,
+                 who_reportntd_mean,
+                 #fao_pestusecapita_kmp,
+                 wb_pestimportstot_mean), log) %>% 
+  rename_with(~paste0("log_", .x),
+              c(#glw_livestockdensity_mean,
+                wb_livestockprod_index,
+                sedac_popcounts_sum,
+                wb_landarea_sqkm,
+                acled_conflictevents_total,
+                who_reportntd_mean,
+                #fao_pestusecapita_kmp,
+                wb_pestimportstot_mean)) %>% 
+  # add +1 to citation count for log transformation
+  mutate(log_pubmedcitations_percounty_total = log(pubmedcitations_percounty_total+1),
+         log_fao_pestusecapita_kmp = log(fao_pestusecapita_kmp+1),
+         log_glw_livestockdensity_mean = log(glw_livestockdensity_mean+1)) %>% 
+  dplyr::select(-c(pubmedcitations_percounty_total,fao_pestusecapita_kmp,glw_livestockdensity_mean,# get rid of old var
+                log_wb_pestimportstot_mean)) # <50 coverage
+
+
+# check vars with 0 so log is transforming into -Inf
+#unique(data_slim$fao_pestusecapita_kmp)
+#unique(data_slim$glw_livestockdensity_mean)
+#unique(data_slim$wb_livestockprod_index)
+```
+
+#Step 3. Data check for coverage & variance
+```{r}
+## check coverage visually
+brt_data_formatted %>% 
+  #dplyr::select(10:30) %>% 
+  vis_miss()
+
+
+## check 1. drop any variables with > 50% NAs
+# calc the porportion of missing values in each column and keep only columns with < 50% missing values
+
+varnums <- c(3:30)
+var_check_na <- 2 + unname(which(c(colSums(is.na(brt_data_formatted[,varnums]))/nrow(brt_data_formatted)) < 0.5))
+# columns 3-30 have more than 50% data present
+
+## check 2. drop variables that lack variation
+# calculate the proportion of the mode common (modal) value to assess how much variation is in a variable
+mode.prop <- function(x) {
+  ux <- unique(x[is.na(x)==FALSE]) # unique no-NA values
+  tab <- tabulate(match(na.omit(x), ux)) # count occurrence of each unique variable
+  max(tab)/length(x[is.na(x)==FALSE]) # prop of the mode (most frequent value)
+}
+var_check_prop <- 2 + unname(which(c(apply(brt_data_formatted[,varnums], 2, mode.prop)) < 0.95))
+# columns 3-30 have more than 95% variation
+
+
+## save as BRT dataset 
+write.csv(brt_data_formatted, file = "zover_matrix_formatted_preBRT_20251103.csv", row.names = FALSE)
+
+```
+
+#Step 4. Hyperparameter tuning
+Find best combination of tuning parameters
+```{r}
+zover_matrix_formatted <- read.csv("zover_matrix_formatted_preBRT_20251103.csv")
+
+
+## step 1. format data for tbv presence model
+data_tbvpresence <- zover_matrix_formatted %>% 
+  dplyr::select(-c(admin, country, iso_a3, tbv_total, log_pubmedcitations_percounty_total)) %>% 
+  # make characters factors
+  mutate(kopp_climatezone_name = as.factor(kopp_climatezone_name),
+         ivsa_chapter = as.factor(ivsa_chapter)) %>% 
+  filter(!is.na(tbv_presence))
+
+## step 2. define  grid of hyperparamters to tune BRT
+hgrid <- expand.grid(n.trees = 5000, # base number of trees
+                     interaction.depth = c(2, 3, 4), # tree complexity
+                     shrinkage = c(0.01, 0.001, 0.0005), # learning rrate
+                     n.minobsinnode = 4, # min observation in terminal node
+                     seed = 1:10) # random seeds for multiple replicates
+
+## make some adjustments to hgrid
+# adjust number of trees for smaller shrinkage/learning rate (slower learning = more trees)
+hgrid$n.trees <- ifelse(hgrid$shrinkage < 0.001, hgrid$n.trees*3, hgrid$n.trees)
+
+
+# generate unique ID for each hyperparameter combo (excluding seed)
+hgrid$id <- with(hgrid, paste(n.trees, interaction.depth, shrinkage, n.minobsinnode, sep = "_"))
+
+# sort grid by ID and seed
+hgrid <- hgrid[order(hgrid$id, hgrid$seed), ]
+
+# add row index and numeric factor
+hgrid$row <- 1:nrow(hgrid)
+hgrid$id2 <- factor(as.numeric(hgrid$id))
+
+
+## step 3. write function to assess each hyperparameter combo
+hfit <- function(row, response) {
+  
+  # make new data
+  model_df = data_tbvpresence
+  
+  # use rsample to split
+  set.seed(hgrid$seed[row])
+  split = initial_split(model_df, prop = 0.7, strata = "tbv_presence")
+  
+  # test and train data
+  dataTrain = training(split)
+  dataTest = testing(split)
+  
+  # ytest and ytrain
+  yTrain = dataTrain$tbv_presence
+  yTest = dataTest$tbv_presence
+
+   
+  ## fit BRT
+  gbmOut = gbm(tbv_presence ~ . ,
+               data = dataTrain,
+               distribution = "bernoulli",
+               n.trees = hgrid$n.trees[row],
+               shrinkage = hgrid$shrinkage[row],
+               interaction.depth = hgrid$interaction.depth[row],
+               n.minobsinnode = hgrid$n.minobsinnode[row],
+               cv.folds = 5,
+               class.stratify.cv = TRUE,
+               bag.fraction = 0.5,
+               train.fraction = 1,
+               n.cores = 1,
+               verbose = F)
+  
+  # check which parameters were the best
+  best.iter = gbm.perf(gbmOut, method = "cv", plot.it = FALSE)
+  
+  # predicted values
+  preds = predict(gbmOut, dataTest, n.trees = best.iter, type = "response")
+  
+  # known values
+  result = dataTest$tbv_presence
+  
+  ## BRT model metrics
+  sen = InformationValue::sensitivity(result, preds)
+  spec = InformationValue::specificity(result, preds)
+  
+  auc_train = gbm.roc.area(yTrain, predict(gbmOut, dataTrain, n.trees = best.iter, type = "response"))
+  auc_test = gbm.roc.area(yTest, predict(gbmOut, dataTest, n.trees = best.iter, type = "response"))
+  
+  # print & save values
+  print(paste("hpar row ", row, " done; test AUC is ", auc_test, sep = ""))
+  
+  return(list(best = best.iter,
+              trainAUC = auc_train,
+              testAUC = auc_test,
+              sen = sen,
+              spec = spec,
+              wrow = row))
+}
+
+
+## step 4. run the function
+hpars <- lapply(1:nrow(hgrid), function(i) hfit(i, response = "tbv_presence"))
+
+## step 5. format results
+# pull results
+hresults <- data.frame(sapply(hpars, function(x) x$trainAUC),
+                      sapply(hpars, function(x) x$testAUC),
+                      sapply(hpars, function(x) x$sen),
+                      sapply(hpars, function(x) x$spec),
+                      sapply(hpars, function(x) x$wrow),
+                      sapply(hpars, function(x) x$best))
+# make column names
+names(hresults) <- c("trainAUC", "testAUC", "sen", "spec", "row", "best")
+
+## step 6. combine and save
+hsearch <- merge(hresults, hgrid)
+
+# write.csv 
+#write.csv(hsearch, "hsearch_paramtuning_datasummary_20251103.csv", row.names = FALSE)
+  
+## step 7. identify which parameters are the best
+# factor to make plotting easier
+hsearch$shrinkage <- factor(hsearch$shrinkage)
+lvl <-  rev(sort(unique(hsearch$shrinkage)))
+hsearch$shrinkage <- factor(hsearch$shrinkage, levels = lvl); rm(lvl)
+hsearch$interaction.depth <- factor(hsearch$interaction.depth)
+
+# conver from wide to long
+hsearch_long <- gather(hsearch, measure, value, testAUC:spec)
+
+# chnage factors
+hsearch_long$measure <- factor(hsearch_long$measure,
+                               levels = c("testAUC", "sen", "spec"),
+                               labels = c("test AUC", "sensitivity", "specificity"))
+
+# okay now identify best parameters
+hsearch_long %>% filter(measure == "test AUC") %>% arrange(desc(value))
+# 18	0.9888112	3778	15000	3	5e-04	4	8
+# n.tress = 15000
+# interaction.dept = 3
+# shrinkage/learning rate = 5e-04
+# n.minobsinnode = 4
+```
+
+#Step 5. Presence model evaluation & prediction 
+with fixed parameters across multiple random splits/seeds
+```{r}
+# n.tress = 15000
+# interaction.dept = 3
+# shrinkage/learning rate = 5e-04
+
+## step 1. write function
+brt_part_presence <- function(seed, response) {
+  
+  # make new data
+  model_df = data_tbvpresence
+  
+  # use rsample to split
+  set.seed(seed)
+  split <- initial_split(model_df, prop = 0.7, strata = "tbv_presence")
+  
+  # test and train data
+  dataTrain = training(split)
+  dataTest = testing(split)
+  
+  # ytest and ytrain
+  yTrain = dataTrain$tbv_presence
+  yTest = dataTest$tbv_presence
+  
+  ## BRT model
+  set.seed(1)
+  
+  gbmOut = gbm(tbv_presence ~ . ,
+               data = dataTrain,
+               distribution = "bernoulli",
+               n.trees = 15000,
+               shrinkage = 0.0005,
+               interaction.depth = 3,
+               n.minobsinnode = 4,
+               cv.folds = 10,
+               class.stratify.cv = TRUE,
+               bag.fraction = 0.5,
+               train.fraction = 1,
+               n.cores = 1,
+               verbose = 1)
+  
+  # check model performance with test data
+  best.iter = gbm.perf(gbmOut, method = "cv", plot.it = FALSE)
+  
+  # predicted values
+  preds <- predict(gbmOut, dataTest, n.trees = best.iter, type = "response")
+  
+  # known values
+  result <- dataTest$tbv_presence
+  
+  ## model metrics
+  sen = InformationValue::sensitivity(result, preds)
+  spec = InformationValue::specificity(result, preds)
+  
+  auc_train = gbm.roc.area(yTrain, predict(gbmOut, dataTrain, n.trees = best.iter, type = "response"))
+  auc_test = gbm.roc.area(yTest, predict(gbmOut, dataTest, n.trees = best.iter, type = "response"))
+  
+  ## variable relative importance
+  bars <- summary(gbmOut, n.trees = best.iter, plotit = F)
+  bars$rel.inf <- round(bars$rel.inf, 2)
+  
+  ## print & save values
+  print(paste("Seed ", seed, " done; test AUC is ", auc_test, sep = ""))
+  
+  return(list(mod = gbmOut,
+              best = best.iter,
+              preds = preds, 
+              trainAUC = auc_train,
+              testAUC = auc_test,
+              sen = sen,
+              spec = spec,
+              rinf = bars,
+              traindata = dataTrain,
+              testdata = dataTest,
+              seed = seed))
+}
+
+## step 2. create stratified partitions to create an ensemble
+smax = 101 # 100 model runs
+brt_result_presence <- lapply(1:smax, function(x) brt_part_presence(seed = x, response = "tbv_presence"))
+
+
+## step 3. save
+saveRDS(brt_result_presence, "brt_result_presence_20251103.rds")
+
+```
+
+#Step 6. BRT metrics for presence model
+
+###Test metrics results
+```{r}
+# get rid of runs that failed to converge
+keep <- which(!is.na(sapply(brt_result_presence, function(x) x$testAUC)))
+brt_result_presence <- brt_result_presence[keep]
+
+### model metrics
+## get mean AUC
+mean(sapply(brt_result_presence, function(x) x$testAUC)) ## 0.8294715
+std.error(sapply(brt_result_presence, function(x) x$testAUC)) # 0.004164542
+
+## get mean sensitivity 
+mean(sapply(brt_result_presence, function(x) x$sen)) # 0.4383938
+std.error(sapply(brt_result_presence, function(x) x$sen)) #  0.01094209
+
+## get mean specificity
+mean(sapply(brt_result_presence, function(x) x$spec)) # 0.9044967
+std.error(sapply(brt_result_presence, function(x) x$spec)) # 0.004977494
+
+
+```
+
+
+###VIF results
+```{r}
+# pull out variable relative influence
+vinf <- lapply(brt_result_presence, function(x) x$rinf)
+response_vinf <- do.call(rbind, vinf)
+
+## aggreagte mean, se and rel.inf
+vinf_data <- data.frame(aggregate(rel.inf ~ var, data = response_vinf , mean),
+                        aggregate(rel.inf ~ var, data = response_vinf, std.error)["rel.inf"],
+                        aggregate(rel.inf ~ var, data = response_vinf, var)["rel.inf"])
+names(vinf_data) <- c("var", "rel.inf", "rse", "rvar")
+
+vinf_data <- vinf_data[order(vinf_data$rel.inf, decreasing = T),]
+
+## calculate vif metrics
+mean(vinf_data$rel.inf) # 4.166828
+var(vinf_data$rel.inf) # 29.23048
+
+# rnak 
+vinf_data$response_rank <- 1:nrow(vinf_data)
+
+
+# save as table to make figures
+#write.table(vinf_data, file = "vinf_data_20251103.txt", sep = ",", quote = FALSE, row.names = F)
+```
+
+#Step 7. Citation effort model
+Now run poisson BRT with citation as outcome to see if reported TBV is a reflection of sampling effort
+```{r}
+##step 1. format citation data
+zover_matrix_formatted_presence <- data_slim %>% 
+  # make characters factors
+  mutate(kopp_climatezone_name = as.factor(kopp_climatezone_name),
+         ivsa_chapter = as.factor(ivsa_chapter)) %>% 
+  mutate_at(vars(#glw_livestockdensity_mean,
+                 wb_livestockprod_index,
+                 sedac_popcounts_sum,
+                 wb_landarea_sqkm,
+                 acled_conflictevents_total,
+                 who_reportntd_mean,
+                 #fao_pestusecapita_kmp,
+                 wb_pestimportstot_mean), log) %>% 
+  rename_with(~paste0("log_", .x),
+              c(#glw_livestockdensity_mean,
+                wb_livestockprod_index,
+                sedac_popcounts_sum,
+                wb_landarea_sqkm,
+                acled_conflictevents_total,
+                who_reportntd_mean,
+                #fao_pestusecapita_kmp,
+                wb_pestimportstot_mean)) %>% 
+  # add +1 to citation count for log transformation
+  mutate(log_pubmedcitations_percounty_total = log(pubmedcitations_percounty_total+1),
+         log_fao_pestusecapita_kmp = log(fao_pestusecapita_kmp+1),
+         log_glw_livestockdensity_mean = log(glw_livestockdensity_mean+1)) %>% 
+  mutate(log_pubmedcitations_percounty_total = as.integer(log_pubmedcitations_percounty_total)) %>% 
+  dplyr::select(-c(pubmedcitations_percounty_total,fao_pestusecapita_kmp,glw_livestockdensity_mean,# get rid of old var
+                log_wb_pestimportstot_mean)) # <50 coverage
+
+
+
+
+## step 2. format data for citation model
+data_citation <- zover_matrix_formatted_presence%>% 
+  dplyr::select(-c(admin, country, iso_a3, tbv_total, tbv_presence)) %>% 
+  # make characters factors
+  mutate(kopp_climatezone_name = as.factor(kopp_climatezone_name),
+         ivsa_chapter = as.factor(ivsa_chapter)) %>% 
+  filter(!is.na(log_pubmedcitations_percounty_total))
+
+
+## step 3. write function
+brt_part_citation <- function(seed, response) {
+  
+  # make new data
+  model_df = data_citation
+  
+  # use rsample to split
+  set.seed(seed)
+  split <- initial_split(model_df, prop = 0.7, strata = "log_pubmedcitations_percounty_total")
+  
+  # test and train data
+  dataTrain = training(split)
+  dataTest = testing(split)
+  
+  
+  ## BRT model
+  set.seed(1)
+  
+  gbmOut = gbm(log_pubmedcitations_percounty_total ~ . ,
+               data = dataTrain,
+               distribution = "poisson",
+               n.trees = 15000,
+               shrinkage = 0.0005,
+               interaction.depth = 3,
+               n.minobsinnode = 4,
+               cv.folds = 10,
+               #class.stratify.cv = TRUE,
+               bag.fraction = 0.5,
+               train.fraction = 1,
+               n.cores = 1,
+               verbose = 1)
+  
+  # check model performance with test data
+  best.iter = gbm.perf(gbmOut, method = "cv", plot.it = FALSE)
+  
+  # predicted values
+  preds <- predict(gbmOut, dataTest, n.trees = best.iter, type = "response")
+  
+  # known values
+  result <- dataTest$log_pubmedcitations_percounty_total
+  
+  ## model metrics
+  rmse <- sqrt(mean((result - preds)^2))
+  mae <- mean(abs(result - preds))
+  correlation <- cor(result, preds, method = "spearman")
+  
+  
+  # make structured prediciton dataframe
+  pred_df <- data.frame(
+    observed = result,
+    predicted = preds,
+    seed = seed)
+  
+  ## print & save values
+  print(paste("Seed ", seed, " done; RMSE is ", rmse, sep = ""))
+  
+  return(list(best = best.iter,
+              rmse = rmse,
+              mae = mae,
+              correlation = correlation,
+              seed = seed,
+              preds = preds, 
+              testdata = dataTest,
+              predict = pred_df))
+}
+
+## step 4. create stratified partitions to create an ensemble
+smax = 101
+brt_result_citation <- lapply(1:smax, function(x) brt_part_citation(seed = x, response = "log_pubmedcitations_percounty_total"))
+
+
+## step 5. save
+#saveRDS(brt_result_citation, "brt_result_citation_20251103.rds")
+
+
+
+### step 6. BRT model metrics summary
+# drop failed runs
+keep <- which(!is.na(sapply(brt_result_citation, function(x) x$rmse)))
+brt_result_citation <- brt_result_citation[keep]
+
+## summary metrics
+rmse_mean <- mean(sapply(brt_result_citation, function(x) x$rmse)) # 4.309495
+rmse_se <- std.error(sapply(brt_result_citation, function(x) x$rmse)) # 0.02131648
+
+mae_mean <- mean(sapply(brt_result_citation, function(x) x$mae)) # 3.113222
+mae_se <- std.error(sapply(brt_result_citation, function(x) x$mae)) # 0.01619675
+
+cor_mean <- mean(sapply(brt_result_citation, function(x) x$correlation)) # 0.5043058
+cor_se <- std.error(sapply(brt_result_citation, function(x) x$correlation)) # 0.007225013
+                                           
+
+## poisson moderate predictive power for citation effort using the same predictors from bernoulli model. the correlation is 0.49 and error is relatively large (3-4 citations off on avera)... predictors of tbv presence are note merely a reflection of citation effort, if they were the poisson model would likely have stronger predictor performance.. eco predictos may genuinely related to where viruses exist, not just where people study them.. my classification model is not simply pricking up citaion biases bc the same predictors are less effective at predicting citation effort
+```
+
