@@ -1,0 +1,1003 @@
+---
+title: "Figures"
+output: html_document
+date: "2025-11-04"
+---
+
+**Manuscript title:** Ecological and socioeconomic factors associated with globally reported tick-borne viruses
+
+**Corresponding author:** Samantha Sambado (sbsambado at ucsb.edu, ssambado at stanford.edu)
+
+**Purpose**
+To run boosted regression trees on cleaned data.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+##upload necessary packages
+library(ggplot2)
+library(tidyverse)
+library(ggpubr)
+library(rnaturalearth)
+library(patchwork)
+library(scales)
+library(RColorBrewer)
+
+##upload necessary data
+worldmap <- ne_countries(scale = "large", type = "countries", returnclass = "sf")
+worldmap_slim <- worldmap %>% dplyr::select(admin, iso_a3)
+brt_matrix_data <- read.csv("zover_matrix_formatted_preBRT_20251103.csv")
+top <- read.csv("tickviruses/clean/zover_toprecognized_complete_pubmed _20240921.csv")
+vinf_data <- read.delim("vinf_data_20251103.txt", sep = ",")
+brt_presence_results <- readRDS("brt_result_presence_20251103.rds")
+hsearch_results <- read.csv("hsearch_paramtuning_datasummary_20251103.csv")
+all_tbvs <- read.csv("tickviruses/clean/zover_allviruses_20240921.csv")
+```
+
+#Main Text
+
+##Figure 2
+Zover database summary
+
+###part a
+```{r}
+## upload data
+world_matrix_data <- left_join(worldmap_slim , brt_matrix_data%>% dplyr::select(-admin), by = "iso_a3")
+
+
+## wrangle data
+world_matrix_clean <- world_matrix_data %>% 
+  mutate(tbv_presence = replace_na(as.numeric(tbv_presence), 0),
+         tbv_presence = factor(tbv_presence, levels = c(0,1), labels = c("Absent", "Present")),
+         tbv_total = replace_na(as.numeric(tbv_total), 0),
+         tbv_total_bin = cut(tbv_total, 
+                             breaks = c(0, 1, 10, 50, 100, 200, 1000, Inf),
+                             labels = c("0", "1-9", "10-49", "50-99", "100-199", "200-999", "1000+"),
+                             right = FALSE),
+         tbv_total_bin = factor(tbv_total_bin, levels = rev(levels(tbv_total_bin))))
+
+## make color bin
+bin_colors <- c("0"  = "#ECE9FC", "1-9"  = "#CABFF4", "10-49"  = "#A495EB", "50-99"  = "#8169E4",
+                "100-199"= "#7B50C8","200-999"= "#783CA9", "1000+"  = "#77278B")  
+
+## plot it
+
+fig_2a <- ggplot() +
+  geom_sf(data = world_matrix_clean, aes(fill = tbv_total_bin), color = NA) +
+  geom_sf(data = world_matrix_clean, fill = NA, color = "black", size = 0.2) +
+  scale_fill_manual(values = bin_colors, name = "Total Records", drop = FALSE,
+    guide = guide_legend(direction = "vertical",
+                         keyheight = unit(0.6, "cm"),
+                         keywidth = unit(0.5, "cm"),
+                         title.position = "top")) +
+  coord_sf(expand = FALSE) +
+  theme_minimal(base_size = 12) +
+    labs(fill = "Total Records", tag = "A") +
+  theme(legend.position = c(.08, .39), 
+        legend.title = element_text(size = 12,face = "bold"), element_blank(), #element_blank()
+        legend.text = element_text(size = 11),
+        legend.background = element_rect(fill = "white", color = NA, size = 0.5, linetype = "solid"),
+        legend.margin = margin(t = 2, r = 1, b = 2, l = 4),
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        panel.grid.major = element_line(color = "transparent"),
+        panel.background = element_rect(fill = "white", color= "NA"),
+        plot.margin = margin(10,10,10, 10)) +
+  labs(title = "ZOVER Record Locations")
+ggsave("figures/fig_2a.jpeg", fig_2a, width = 8, height = 5, dpi = 600)
+```
+
+###part b
+```{r}
+## fix virus name for visualization
+top_clean <- top %>% 
+    mutate(fix_viruses = case_when(
+      fix_viruses == "Lumpy skin disease" ~ "LSD",
+      fix_viruses == "African swine fever virus" ~ "ASF",
+      fix_viruses == "Colorado tick fever" ~ "CTF",
+      fix_viruses == "Crimean-Congo Hemorrhagic fever" ~ "CCHF",
+      fix_viruses == "Severe fever with thrombocytopenia syndrome" ~ "SFTS",
+      fix_viruses == "Nairobi sheep disease virus" ~ "NSD",
+      fix_viruses == "Sawgrass virus" ~ "SGV",
+      fix_viruses == "Heartland virus" ~ "HLV",
+      fix_viruses == "Bhanja virus" ~ "BHV",
+      fix_viruses == "Bourbon virus" ~ "BOV",
+      fix_viruses == "Jingmen tick virus" ~ "JTV",
+      fix_viruses == "Powassan virus" ~ "PWV",
+      fix_viruses == "Tick-borne encephalitis virus" ~ "TBE",
+      fix_viruses == "Alkhumra hemorrhagic fever virus" ~ "AHF",
+      fix_viruses == "Kyasanur Forest disease virus" ~ "KFD",
+      fix_viruses == "Deer tick virus" ~ "DTF",
+      fix_viruses == "Omsk hemorrhagic fever virus" ~ "OHF",
+      fix_viruses == "Louping ill virus" ~ "LIV",
+      TRUE ~ fix_viruses))
+
+## plot it
+fig_2b <- top_clean %>% 
+  group_by(fix_viruses) %>% 
+  tally() %>% 
+  mutate(log_n = log(n),
+         fix_viruses = reorder(fix_viruses,log_n)) %>% 
+  ggplot(aes(y = fix_viruses, x = log_n)) +
+  geom_col(col = "#7B50C8", fill = "#CABFF4" , width = .8) + #fill =  "#77278B", color = "#5E1F6A"
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_text(face = "bold", size = 14),
+        axis.title.x = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", size = 14), #, hjust = 0.5
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray90"),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.margin = margin(10, 10, 10, 10))  +
+  scale_y_discrete(expand = c(0.01, 0.01)) + 
+  scale_x_continuous(limits = c(0, 7.6), expand = c(0.01, 0.0)) +
+  labs(x = "log(Records in ZOVER)",y = NULL,title = "ZOVER Record Collection",tag = "B")
+
+#ggsave("figures/fig_2b.jpeg", fig_2b, width = 4, height = 5, dpi = 600)
+
+```
+
+###part c
+```{r}
+## make color pallette
+continent_colors <- c("#CB5358", "#587D8C", "#6D9F8E", "#F3B06D")
+
+## wrangle data
+virus_order <- top_clean %>% 
+  group_by(fix_viruses) %>% 
+  tally() %>% 
+  arrange(desc(n)) %>% 
+  pull(fix_viruses)
+
+# filter
+top_filtered <- top_clean %>%
+  group_by(admin, fix_viruses, year_agg, continent) %>%
+  tally() %>%
+  filter(!is.na(continent)) %>%
+  mutate(fix_viruses = factor(fix_viruses, levels =  virus_order),
+         fix_viruses = fct_rev(fix_viruses),
+         year_agg = factor(year_agg, levels = seq(1990, 2020, by = 5)))
+
+## plot base map
+fig_2c_base <- ggplot(top_filtered, aes(x = year_agg, y = fix_viruses)) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_text(face = "bold", size = 14),
+        axis.text.x = element_text(size = 11.5),
+        axis.title = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", size = 14),
+        legend.position = "bottom",
+        legend.title = element_text(face = "bold", size = 12),
+        legend.text = element_text(size = 11),
+        legend.key.width = unit(0.3, "cm"),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.major.y = element_line(size = 0.3, color = "grey80"),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.margin = margin(10, 10, 10, 10)) +
+  labs(x = NULL, y = NULL,color = "Continent",title = "ZOVER Record Timeline",tag = "C") +
+  scale_color_manual(values = c("#587D8C", "#6D9F8E", "#F3B06D", "#CB5358")) +
+  guides(color = guide_legend(title.position = "top", title.hjust = 0.5))
+
+# make concentric circles
+# larger points are plotted first
+continents_order <- c("Africa", "Asia", "Europe", "Americas")
+sizes <- c(6, 5, 4, 3) 
+
+# write function to plot in order
+for (i in seq_along(continents_order)) {
+  cont <- continents_order[i]
+  fig_2c_base <- fig_2c_base + 
+    geom_point(data = filter(top_filtered, continent == cont), 
+               aes(color = continent), size = sizes[i],
+               show.legend = i == length(continents_order)) # show legend only once
+}
+
+## combine base map with concentric circles
+fig_2c <- fig_2c_base +
+  scale_color_manual(values = continent_colors) +
+  scale_y_discrete(limits = levels(top_filtered$fix_viruses))
+
+#ggsave("figures/fig_2c.jpeg", fig_2c, width = 4, height = 5, dpi = 600)
+
+```
+
+Combine b & c
+```{r}
+fig_2bc <- (fig_2b | (fig_2c + theme(legend.position = "right"))) +
+  plot_layout(heights = c(1,1), widths = c(0.5, 0.7),
+              guides = "collect")
+
+ggsave("figures/fig_2bc.jpeg", fig_2bc, width = 9, height = 5, dpi = 600)
+```
+
+##Figure 3
+Variable influence from presence BRT model
+```{r}
+## color pal
+category_colors <- c("Environment" = "#06D6a0",
+                     "Wealth" = "#ef476f",
+                     "Reporting" = "#ffd166",
+                     "Knowledge" = "#118ab2",
+                     "Health Care" = "#073b4c",
+                     "Exposure" = "#588157")
+
+## assign category to variables
+vinf_data_clean <- vinf_data %>% 
+  mutate(category = case_when(var == "kopp_climatezone_name" ~ "Environment", 
+                              var == "wb_gini_index" ~ "Wealth", 
+                              var == "log_sedac_popcounts_sum" ~ "Reporting", 
+                              var == "log_fao_pestusecapita_kmp" ~ "Knowledge", 
+                              var == "log_wb_landarea_sqkm" ~ "Reporting", 
+                              var == "log_wb_livestockprod_index" ~ "Exposure", 
+                              var == "ivsa_chapter" ~ "Knowledge", 
+                              var == "log_acled_conflictevents_total" ~ "Reporting", 
+                              var == "wb_povertyline_pct" ~ "Wealth", 
+                              var == "acled_conflictpopexposure_pct" ~ "Reporting",
+                              var == "log_glw_livestockdensity_mean" ~ "Exposure",
+                              var == "wb_gradvetsforestag_pct" ~ "Knowledge",
+                              var == "wb_urbanpop_pct" ~ "Reporting",
+                              var == "wb_adultlit_rate" ~ "Knowledge",
+                              var == "log_who_reportntd_mean" ~ "Health Care",
+                              var == "wb_employedag" ~ "Exposure",
+                              var == "wb_gradhealthwelf_pct" ~ "Knowledge",
+                              var == "wb_expendhealth_pct" ~ "Health Care",
+                              var == "grdi_shdi_mean" ~ "Wealth",
+                              var == "wwf_ecoreg_total" ~ "Environment",
+                              var == "wb_forested_pct" ~ "Environment",
+                              var == "wb_expendedu_pct" ~ "Knowledge",
+                              var == "ee_vegdisim_mean" ~ "Environment",
+                              var == "wb_accesselect_pct" ~ "Wealth",
+                              TRUE ~ NA)) %>%
+  mutate(category = factor(category, levels = names(category_colors)))
+
+## make labels nicer
+pretty_labels <- rev(c(
+  "kopp_climatezone_name" = "Climate Zone",
+   "wb_gini_index" = "Gini Index",
+   "log_sedac_popcounts_sum" = "Pop. Counts",
+   "log_fao_pestusecapita_kmp" = "Pesticide Use",
+   "log_wb_landarea_sqkm" = "Land Area",
+   "log_wb_livestockprod_index" = "Livestock Production",
+   "ivsa_chapter" = "IVSA Chapter Present",
+   "log_acled_conflictevents_total" = "Conflict (total events)",
+   "wb_povertyline_pct" = "Below Poverty Line",
+   "acled_conflictpopexposure_pct" = "Conflict (% of pop.)",
+   "log_glw_livestockdensity_mean" = "Livestock Density",
+   "wb_gradvetsforestag_pct" = "Vet/Ag/Forest Grads",
+   "wb_urbanpop_pct" =  "Urban Pop.",
+  "wb_adultlit_rate"  = "Adult Literacy",
+   "log_who_reportntd_mean" = "NTD Treatment",
+   "wb_employedag" = "Employed in Ag.",
+   "wb_gradhealthwelf_pct"  = "Health & Welfare Grads",
+   "wb_expendhealth_pct" = "Health Spending",
+   "grdi_shdi_mean" = "Social Vulnerability",
+   "wwf_ecoreg_total" = "Total Ecoregions",
+   "wb_forested_pct"= "Forested",
+   "wb_expendedu_pct" = "Education Spending",
+   "ee_vegdisim_mean" = "Habitat Fragmentation",
+   "wb_accesselect_pct"= "Electricity Access"))
+
+## plot it!
+fig_3 <- 
+vinf_data_clean %>% 
+  arrange(rel.inf) %>% 
+  mutate(var = factor(var, levels = unique(var))) %>% 
+  ggplot(aes(x = rel.inf, y = var, fill = category)) +
+  geom_col(color = "black", width = 0.8) +
+  scale_fill_manual(values = category_colors, na.value = "white") +
+  scale_x_continuous(expand = c(0,0), limits = c(0, max(vinf_data_clean$rel.inf))) +
+  scale_y_discrete(labels = pretty_labels) +
+  labs(x = "Relative Influence (%)", y = NULL, fill = "Variable Category") + #, tag = "A"
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", size = 14),
+    axis.title.x = element_text(face = "bold", size = 12),
+    axis.text.y = element_text(size = 11, margin = margin(t = 5, b = 5)),
+    axis.text.x = element_text(size = 11),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_line(color = "gray90"),
+    panel.background = element_rect(fill = "white", color = NA),
+    legend.position = c(0.73, 0.23),
+    legend.title = element_text(face = "bold", size = 12),
+    legend.text = element_text(size = 11, face = "bold"),
+    legend.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(10, 10, 10, 10))
+
+ggsave("figures/fig_3.jpeg", fig_3, width = 5, height = 4.5, dpi = 600)
+```
+
+##Figure 4
+Partial dependence plots from presence BRT model
+
+###part a - write function
+```{r}
+# step 1. compute PDP values for single model + predictor
+pdp_agg <- function(mod, feature) {
+  pdep <- plot(mod$mod, feature,
+               return.grid = TRUE,
+               n.trees = mod$best,
+               plot = FALSE,
+               continuous.resolution = 200,
+               type = "response")
+  
+  pdep$seed <- mod$seed #unique(mod$roc$seed)
+  pdep$predictor <- pdep[[feature]]
+  pdep <- pdep[order(pdep$predictor),]
+  pdep$rank <- seq_len(nrow(pdep))
+  pdep$yhat <- pdep$y
+  
+  return(pdep)
+}
+
+## step 2. make function to plot PDP
+pdp_plot <- function(bmods, feature, data, title = NULL, tag = NULL, target = "target_variable") {
+  
+  # aggregate across BRT models
+  agg <- do.call(rbind,lapply(bmods, function(x) pdp_agg(x, feature)))
+  
+  # determine feature type
+  feature_class <- class(data[[feature]])
+  
+  # set theme style
+  base_theme <- theme_minimal(base_size = 12) +
+    theme(axis.text.y = element_text(face = "bold", size = 11),
+      axis.text.x = element_text(size = 11),
+      axis.title.x = element_text(face = "bold", size = 12, margin = margin(t = 5)),
+      axis.title.y = element_text(face = "bold", size = 12, margin = margin(r = 5)),
+      plot.title = element_text(face = "bold", size = 15),
+      panel.grid.major.y = element_blank(),
+      panel.grid.major.x = element_blank(), #element_line(color = "gray99"),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.margin = margin(10, 10, 10, 10))
+  
+  if(feature_class %in% c("numeric", "integer")) {
+    # continuous predictor
+    x_mean <- with(agg, tapply(predictor, rank, mean))
+    y_mean <- with(agg, tapply(yhat, rank, mean))
+    pmean <- data.frame(predictor = x_mean, yhat = y_mean)
+    yrange <- range(c(agg$yhat, pmean$yhat), na.rm = TRUE)
+    
+    
+    # histogram for marginal distributions
+    hist_data <- hist(data[[feature]], breaks = 30, plot = FALSE)
+    hist_df <- data.frame(mids = hist_data$mids, counts = hist_data$counts)
+    hist_df$scaled <- plotrix::rescale(hist_df$counts, yrange)
+    p <- ggplot(agg, aes(x = predictor, y = yhat, group = seed)) +
+      geom_col(data = hist_df, inherit.aes = FALSE, aes(x = mids, y = scaled), 
+               fill = "grey80", width = diff(hist_df$mids)[1], alpha = 0.2) +
+     # geom_segment(data = hist_df, inherit.aes = FALSE,
+      #             aes(x = mids, xend = mids, y = yrange[1], yend = plotrix::rescale(counts, yrange)),
+       #            size = 0.8, color = "grey80", alpha = 0.3) +
+      geom_line(size = 1, alpha = 0.25, color = "#CABFF4") + #"grey70") +
+      geom_line(data = pmean, aes(x = predictor, y = yhat), inherit.aes = FALSE, size = 1.2, color = "#7B50C8") + #"#77278B"
+      labs(x = NULL, y = "Marginal Effect", title = title, tag = tag) + #x = feature
+      scale_y_continuous(labels = number_format(accuracy = 0.01)) +
+      scale_x_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+      base_theme
+  } else{
+    
+    # if predictor is a factor
+    y_mean <- with(agg, tapply(yhat, predictor, mean)) 
+    pmean <- data.frame(predictor = names(y_mean), yhat = y_mean)
+    
+    temp <- data
+    temp$predictor <- temp[[feature]]
+    yrange <- range(c(agg$yhat, pmean$yhat), na.rm = TRUE)
+    temp$yhat <- ifelse(temp[[target]] == 1, max(yrange), min(yrange))
+    
+    p <- ggplot(agg, aes(x = predictor, y = yhat, group = seed)) +
+      geom_jitter(size = 1, alpha = 0.25, color ="#CABFF4", width = 0.1) +
+      geom_point(data = pmean, aes(x = predictor, y = yhat),
+                 inherit.aes = FALSE, size = 2, shape = 15, color = "#7B50C8") + #"#77278b") +
+      geom_rug(data = temp, aes(x = predictor, y = yhat),
+               inherit.aes = FALSE, sides = "b", position = "jitter",
+               color = "grey", alpha = 0.25, na.rm = TRUE) +
+      labs(x = NULL, y = "Marginal Effect", title = title, tag = tag) + #x = feature
+      scale_y_continuous(limits = c(yrange[1]-0.01, yrange[2] + 0.01),
+                         labels = number_format(accuracy = 0.01)) +
+      base_theme
+  }
+  
+  return(p)
+}
+
+ 
+```
+
+###part b - apply function
+```{r}
+## make training dataset
+train_data <- brt_presence_results[[1]]$traindata
+
+
+# make sure things are factors
+train_data$kopp_climatezone_name <- as.factor(train_data$kopp_climatezone_name)
+train_data$ivsa_chapter <- as.factor(train_data$ivsa_chapter)
+
+## make individual plots
+pdp_climate <- pdp_plot(brt_presence_results, "kopp_climatezone_name", data = train_data[!is.na(train_data$kopp_climatezone_name),], title = "Climate Zone", target = "kopp_climatezone_name" )
+pdp_ivsa <- pdp_plot(brt_presence_results, "ivsa_chapter", data = train_data[!is.na(train_data$ivsa_chapter),], title = "IVSA Chapter", target = "ivsa_chapter")
+
+pdp_vetagfor <- pdp_plot(brt_presence_results, "wb_gradvetsforestag_pct", data = train_data, title = "Vet/Ag/Forestry Grads")
+pdp_gini <- pdp_plot(brt_presence_results, "wb_gini_index", data = train_data, title = "Gini Index")
+pdp_pest <- pdp_plot(brt_presence_results, "log_fao_pestusecapita_kmp", data = train_data, title = "Pesticide Use")
+pdp_livestock <- pdp_plot(brt_presence_results, "log_wb_livestockprod_index", data = train_data, title = "Livestock Index")
+pdp_popcounts <- pdp_plot(brt_presence_results, "log_sedac_popcounts_sum", data = train_data, title = "Population Count")
+pdp_conflict <- pdp_plot(brt_presence_results, "acled_conflictpopexposure_pct", data = train_data, title = "% Conflict Exposure")
+pdp_poverty <- pdp_plot(brt_presence_results, "wb_povertyline_pct", data = train_data, title = "% Poverty Line")
+pdp_land <- pdp_plot(brt_presence_results, "log_wb_landarea_sqkm", data = train_data, title = "Land Area")
+pdp_conflicttotal <- pdp_plot(brt_presence_results, "log_acled_conflictevents_total", data = train_data, title = "Tot. Conflict Exposure")
+pdp_agemploy <- pdp_plot(brt_presence_results, "wb_employedag", data = train_data, title = "% Ag Employment")
+pdp_popurban <- pdp_plot(brt_presence_results, "wb_urbanpop_pct", data = train_data, title = "% Urban Pop.")
+pdp_forestarea <- pdp_plot(brt_presence_results, "wb_forested_pct", data = train_data, title = "% Forested Area")
+pdp_shdi <- pdp_plot(brt_presence_results, "grdi_shdi_mean", data = train_data, title = "Development Index")
+pdp_educationexpend <- pdp_plot(brt_presence_results, "wb_expendedu_pct", data = train_data, title = "Education Expenditures")
+pdp_veghetero <- pdp_plot(brt_presence_results, "ee_vegdisim_mean", data = train_data, title = "Habitat Fragmentation")
+pdp_healthcarespend <- pdp_plot(brt_presence_results, "wb_expendhealth_pct", data = train_data, title = "Health Expenditures")
+pdp_ecortotal <- pdp_plot(brt_presence_results, "wwf_ecoreg_total", data = train_data, title = "Ecoregions Total")
+pdp_adultlit <- pdp_plot(brt_presence_results, "wb_adultlit_rate", data = train_data, title = "Adult Literacy Rate Mean")
+pdp_electric <- pdp_plot(brt_presence_results, "wb_accesselect_pct", data = train_data, title = "% Electricity Access")
+pdp_gradhealth <- pdp_plot(brt_presence_results, "wb_gradhealthwelf_pct", data = train_data, title = "Health & Welfare Grads")
+```
+
+###part c - pull out main figures for figure 4
+```{r}
+pdp_ggarrange <- ggarrange( pdp_gini + rremove("ylab"), pdp_popcounts + rremove("ylab"),
+          pdp_livestock + rremove("ylab"), pdp_pest + rremove("ylab") + theme(axis.text.x = element_text(size = 7)), 
+          pdp_conflict+ rremove("ylab"),  pdp_poverty + rremove("ylab"), #pdp_vetagfor pdp_poverty
+           pdp_ivsa + rremove("ylab"), pdp_climate + rremove("ylab") + theme(axis.text.x = element_text(angle = 90, hjust = 0, size = 7)), 
+          #ncol = 4, nrow = 2 
+          ncol = 4, nrow = 2)
+
+pdp_ggarrange_an <- annotate_figure(pdp_ggarrange, 
+                left = text_grob("Marginal Effect", rot = 90, size = 15, face = "bold"))
+
+ggsave("figures/fig_4_v2.jpeg", pdp_ggarrange_an, width = 10.5, height = 5, dpi = 600) #width = 10
+
+
+```
+
+
+#Supplementary Figures
+
+##Figure S1
+
+###part a - citation county by country
+```{r}
+## set up colors
+mypal <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+sc <- scale_fill_gradientn(colors = mypal(8), limits = c(0, 8))
+
+## plot it
+fig_s_1a <- top %>% 
+  filter(!is.na(iso_a3)) %>% 
+  group_by(iso_a3) %>% 
+  summarise(mean_citations = mean(pubmedcitations_percounty_total, na.rm = TRUE)) %>% 
+  mutate(iso_a3 = case_when(iso_a3 == "France" ~ "FRA",
+                            iso_a3 == "Norway" ~ "NOR",
+                            TRUE ~ iso_a3)) %>% 
+  ggplot(aes(x = log(mean_citations), y = fct_reorder(iso_a3, mean_citations))) +
+  geom_col(col = "#7B50C8", fill = "#CABFF4", width = .8) + 
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_text(face = "bold", size = 11),
+        axis.title.x = element_text(face = "bold", size = 12),
+        plot.title = element_text(face = "bold", size = 14), #, hjust = 0.5
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray90"),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.margin = margin(10, 10, 10, 10))  +
+  scale_y_discrete(expand = c(0, 0), guide = guide_axis(check.overlap = TRUE, n.dodge = 2)) + 
+  #scale_x_continuous(limits = c(0, 7.6), expand = c(0.01, 0.0)) +
+  labs(x = "log(Total Citations)", y = NULL, tags = "A") 
+
+ggsave("figures/fig_s_1a.jpeg",fig_s_1a, width = 4, height = 5, dpi = 600)
+```
+
+###part b - citation count by virus
+```{r}
+top_virus <- top %>% 
+group_by(iso_a3,fix_viruses) %>%
+  tally() %>% 
+  filter(!is.na(iso_a3)) %>% 
+  mutate(fix_viruses = case_when(fix_viruses == "Lumpy skin disease" ~ "LSD",
+                                        fix_viruses == "African swine fever virus" ~ "ASF",
+                                        fix_viruses == "Colorado tick fever" ~ "CTF",
+                                        fix_viruses == "Crimean-Congo Hemorrhagic fever" ~ "CCHF",
+                                        fix_viruses == "Severe fever with thrombocytopenia syndrome" ~ "SFTS",
+                                        fix_viruses == "Nairobi sheep disease virus" ~ "NSD",
+                                        fix_viruses == "Sawgrass virus" ~ "SGV",
+                                        fix_viruses == "Heartland virus" ~ "HLV",
+                                        fix_viruses == "Bhanja virus" ~ "BHV",
+                                        fix_viruses == "Bourbon virus" ~ "BOV",
+                                        fix_viruses == "Jingmen tick virus" ~ "JTV",
+                                        fix_viruses == "Powassan virus" ~ "PWV",
+                                        fix_viruses == "Tick-borne encephalitis virus" ~ "TBE",
+                                        fix_viruses == "Alkhumra hemorrhagic fever virus" ~ "AHF",
+                                        fix_viruses == "Kyasanur Forest disease virus" ~ "KFD",
+                                        fix_viruses == "Deer tick virus" ~ "DTF",
+                                        fix_viruses == "Omsk hemorrhagic fever virus" ~ "OHF",
+                                        fix_viruses == "Louping ill virus" ~ "LIV",
+                                        TRUE ~ fix_viruses),
+         iso_a3 = case_when(iso_a3 == "France" ~ "FRA",
+                            iso_a3 == "Norway" ~ "NOR",
+                            TRUE ~ iso_a3))  
+
+
+fig_s_1b <- top_virus  %>% 
+  ggplot(aes(x = fix_viruses, y = fct_rev(factor(iso_a3)), fill = log(n+1))) +
+  geom_tile() +
+  labs(x = NULL, y = NULL, fill = "log(Total Citations)", tags = "B") +
+  scale_y_discrete(expand = c(0, 0), guide = guide_axis(check.overlap = TRUE, n.dodge = 2)) +
+  sc +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, face = "bold", size = 12),
+        axis.text.y = element_text(face = "bold", size = 11),
+        panel.background = element_rect(fill = "#f9f9f9", color = NA),
+        #plot.background = element_rect(fill = "#f9f9f9", color = NA),
+    legend.position = "bottom", #"right",
+    legend.margin = margin(t = -5),
+    legend.box.margin = margin(t = -5),
+    legend.title = element_text(face = "bold", vjust = .9)) 
+
+ggsave("figures/fig_s_1b.jpeg",fig_s_1b, width = 4, height = 5, dpi = 600)
+
+```
+
+combine them
+```{r}
+fig_s_1ab <- ggarrange(fig_s_1a, fig_s_1b)
+
+ggsave("figures/fig_s_1ab.jpeg",fig_s_1ab, width = 8, height = 10, dpi = 600)
+
+```
+
+##Figure S2
+```{r}
+
+## write function to plot PDP
+pdp_plot_ylimslim <- function(bmods, feature, data, title = NULL, tag = NULL, target = "target_variable") {
+  
+  # aggregate across BRT models
+  agg <- do.call(rbind,lapply(bmods, function(x) pdp_agg(x, feature)))
+  
+  # determine feature type
+  feature_class <- class(data[[feature]])
+  
+  # set theme style
+  base_theme <- theme_minimal(base_size = 12) +
+    theme(axis.text.y = element_text(face = "bold", size = 11),
+      axis.text.x = element_text(size = 11),
+      axis.title.x = element_text(face = "bold", size = 12, margin = margin(t = 5)),
+      axis.title.y = element_text(face = "bold", size = 12, margin = margin(r = 5)),
+      plot.title = element_text(face = "bold", size = 15),
+      panel.grid.major.y = element_blank(),
+      panel.grid.major.x = element_blank(), #element_line(color = "gray99"),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.margin = margin(10, 10, 10, 10))
+  
+  if(feature_class %in% c("numeric", "integer")) {
+    # continuous predictor
+    x_mean <- with(agg, tapply(predictor, rank, mean))
+    y_mean <- with(agg, tapply(yhat, rank, mean))
+    pmean <- data.frame(predictor = x_mean, yhat = y_mean)
+    #yrange <- range(c(agg$yhat, pmean$yhat), na.rm = TRUE)
+    
+      # automatically calculate yrange with buffer
+  y_min <- min(c(agg$yhat, pmean$yhat), na.rm = TRUE)
+  y_max <- max(c(agg$yhat, pmean$yhat), na.rm = TRUE)
+  buffer <- (y_max - y_min) * 0.05  # 5% padding
+  yrange <- c(y_min - buffer, y_max + buffer)
+  
+    
+    # histogram for marginal distributions
+    hist_data <- hist(data[[feature]], breaks = 30, plot = FALSE)
+    hist_df <- data.frame(mids = hist_data$mids, counts = hist_data$counts)
+    hist_df$scaled <- plotrix::rescale(hist_df$counts, yrange)
+    p <- ggplot(agg, aes(x = predictor, y = yhat, group = seed)) +
+      geom_col(data = hist_df, inherit.aes = FALSE, aes(x = mids, y = scaled), 
+               fill = "grey80", width = diff(hist_df$mids)[1], alpha = 0.2) +
+     # geom_segment(data = hist_df, inherit.aes = FALSE,
+      #             aes(x = mids, xend = mids, y = yrange[1], yend = plotrix::rescale(counts, yrange)),
+       #            size = 0.8, color = "grey80", alpha = 0.3) +
+      geom_line(size = 1, alpha = 0.25, color = "#CABFF4") + #"grey70") +
+      geom_line(data = pmean, aes(x = predictor, y = yhat), inherit.aes = FALSE, size = 1.2, color = "#7B50C8") + #"#77278B"
+      labs(x = NULL, y = "Marginal Effect", title = title, tag = tag) + #x = feature
+      scale_y_continuous(labels = number_format(accuracy = 0.01),limits = yrange) +
+      scale_x_continuous(expand = expansion(mult = c(0.01, 0.01))) +
+      base_theme
+  } else{
+    
+    # if predictor is a factor
+    y_mean <- with(agg, tapply(yhat, predictor, mean)) 
+    pmean <- data.frame(predictor = names(y_mean), yhat = y_mean)
+    
+    temp <- data
+    temp$predictor <- temp[[feature]]
+    yrange <- range(c(agg$yhat, pmean$yhat), na.rm = TRUE)
+    temp$yhat <- ifelse(temp[[target]] == 1, max(yrange), min(yrange))
+    
+    p <- ggplot(agg, aes(x = predictor, y = yhat, group = seed)) +
+      geom_jitter(size = 1, alpha = 0.25, color ="#CABFF4", width = 0.1) +
+      geom_point(data = pmean, aes(x = predictor, y = yhat),
+                 inherit.aes = FALSE, size = 2, shape = 15, color = "#7B50C8") + #"#77278b") +
+      geom_rug(data = temp, aes(x = predictor, y = yhat),
+               inherit.aes = FALSE, sides = "b", position = "jitter",
+               color = "grey", alpha = 0.25, na.rm = TRUE) +
+      labs(x = NULL, y = "Marginal Effect", title = title, tag = tag) + #x = feature
+      scale_y_continuous(limits = c(yrange[1]-0.01, yrange[2] + 0.01),
+                         labels = number_format(accuracy = 0.01)) +
+      base_theme
+  }
+  
+  return(p)
+}
+
+
+
+
+## make individual plots
+slim_pdp_climate <- pdp_plot_ylimslim(brt_presence_results, "kopp_climatezone_name", data = train_data[!is.na(train_data$kopp_climatezone_name),], title = "Climate Zone", target = "kopp_climatezone_name" )
+slim_pdp_ivsa <- pdp_plot_ylimslim(brt_presence_results, "ivsa_chapter", data = train_data[!is.na(train_data$ivsa_chapter),], title = "IVSA Chapter", target = "ivsa_chapter")
+
+slim_pdp_vetagfor <- pdp_plot_ylimslim(brt_presence_results, "wb_gradvetsforestag_pct", data = train_data, title = "Vet/Ag/Forestry Grads")
+slim_pdp_gini <- pdp_plot_ylimslim(brt_presence_results, "wb_gini_index", data = train_data, title = "Gini Index")
+slim_pdp_pest <- pdp_plot_ylimslim(brt_presence_results, "log_fao_pestusecapita_kmp", data = train_data, title = "Pesticide Use")
+slim_pdp_livestock <- pdp_plot_ylimslim(brt_presence_results, "log_wb_livestockprod_index", data = train_data, title = "Livestock Index")
+slim_pdp_popcounts <- pdp_plot_ylimslim(brt_presence_results, "log_sedac_popcounts_sum", data = train_data, title = "Population Count")
+slim_pdp_conflict <- pdp_plot_ylimslim(brt_presence_results, "acled_conflictpopexposure_pct", data = train_data, title = "% Conflict Exposure")
+slim_pdp_poverty <- pdp_plot_ylimslim(brt_presence_results, "wb_povertyline_pct", data = train_data, title = "% Poverty Line")
+slim_pdp_land <- pdp_plot_ylimslim(brt_presence_results, "log_wb_landarea_sqkm", data = train_data, title = "Land Area")
+slim_pdp_conflicttotal <- pdp_plot_ylimslim(brt_presence_results, "log_acled_conflictevents_total", data = train_data, title = "Tot. Conflict Exposure")
+slim_pdp_agemploy <- pdp_plot_ylimslim(brt_presence_results, "wb_employedag", data = train_data, title = "% Ag Employment")
+slim_pdp_popurban <- pdp_plot_ylimslim(brt_presence_results, "wb_urbanpop_pct", data = train_data, title = "% Urban Pop.")
+slim_pdp_forestarea <- pdp_plot_ylimslim(brt_presence_results, "wb_forested_pct", data = train_data, title = "% Forested Area")
+slim_pdp_shdi <- pdp_plot_ylimslim(brt_presence_results, "grdi_shdi_mean", data = train_data, title = "Development Index")
+slim_pdp_educationexpend <- pdp_plot_ylimslim(brt_presence_results, "wb_expendedu_pct", data = train_data, title = "Education Expenditures")
+slim_pdp_veghetero <- pdp_plot_ylimslim(brt_presence_results, "ee_vegdisim_mean", data = train_data, title = "Habitat Fragmentation")
+slim_pdp_healthcarespend <- pdp_plot_ylimslim(brt_presence_results, "wb_expendhealth_pct", data = train_data, title = "Health Expenditures")
+slim_pdp_ecortotal <- pdp_plot_ylimslim(brt_presence_results, "wwf_ecoreg_total", data = train_data, title = "Ecoregions Total")
+slim_pdp_adultlit <- pdp_plot_ylimslim(brt_presence_results, "wb_adultlit_rate", data = train_data, title = "Adult Literacy Rate Mean")
+slim_pdp_electric <- pdp_plot_ylimslim(brt_presence_results, "wb_accesselect_pct", data = train_data, title = "% Electricity Access")
+slim_pdp_gradhealth <- pdp_plot_ylimslim(brt_presence_results, "wb_gradhealthwelf_pct", data = train_data, title = "Health & Welfare Grads")
+
+
+## arrange plots
+slim_pdp_ggarrange <- ggarrange(slim_pdp_climate + rremove("ylab") + theme(axis.text.x = element_text(angle = 90, hjust = 0, size = 7)),
+          slim_pdp_ivsa + rremove("ylab"), 
+          slim_pdp_vetagfor + rremove("ylab"),
+          slim_pdp_gini + rremove("ylab"),
+          slim_pdp_pest + rremove("ylab"),
+          slim_pdp_livestock + rremove("ylab"),
+          slim_pdp_popcounts + rremove("ylab"),
+          slim_pdp_conflict + rremove("ylab"),
+          slim_pdp_poverty + rremove("ylab"),
+          slim_pdp_land + rremove("ylab"),
+          slim_pdp_conflicttotal + rremove("ylab"),
+          slim_pdp_agemploy + rremove("ylab"),
+          slim_pdp_popurban + rremove("ylab"),
+          slim_pdp_forestarea + rremove("ylab"), 
+          slim_pdp_shdi + rremove("ylab"),
+          slim_pdp_educationexpend + rremove("ylab"),
+          slim_pdp_veghetero + rremove("ylab"),
+          slim_pdp_ecortotal + rremove("ylab"),
+          slim_pdp_adultlit + rremove("ylab"),
+          slim_pdp_electric + rremove("ylab"),
+          slim_pdp_healthcarespend + rremove("ylab"),
+          slim_pdp_gradhealth + rremove("ylab"),
+          ncol = 6, nrow = 4)
+
+## annotate figure
+slim_pdp_ggarrange_an <- annotate_figure(slim_pdp_ggarrange, 
+                left = text_grob("Marginal Effect", rot = 90, size = 15, face = "bold"))
+
+
+ggsave("figures/fig_s_2.jpeg", slim_pdp_ggarrange_an, width = 15, height = 10, dpi = 600) 
+```
+
+##Figure S3
+```{r}
+### format data
+## factor to make plotting easier
+hsearch_results$shrinkage <- factor(hsearch_results$shrinkage)
+lvl <-  rev(sort(unique(hsearch_results$shrinkage)))
+hsearch_results$shrinkage <- factor(hsearch_results$shrinkage, levels = lvl); rm(lvl)
+hsearch_results$interaction.depth <- factor(hsearch_results$interaction.depth)
+
+## convert from wide to long
+hsearch_results_long <- gather(hsearch_results, measure, value, testAUC:spec)
+
+# chnage factors
+hsearch_results_long$measure <- factor(hsearch_results_long$measure,
+                               levels = c("testAUC", "sen", "spec"),
+                               labels = c("test AUC", "sensitivity", "specificity"))
+
+### plot data
+#### part A
+fig_s_3a <- hsearch_results_long %>% 
+  ggplot(aes(x = shrinkage, y = value, color = interaction.depth, fill = interaction.depth)) +
+  geom_boxplot(alpha = 0.2, position = position_dodge(width = 0.75)) +
+  geom_point(alpha = 0.7, size = 2,position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.75)) +
+  theme_minimal(base_size = 12) +
+  theme( panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text = element_text(size = 10, face = "bold"),
+    axis.title.x = element_text(size = 12, face = "bold", margin = margin(t = 10)),
+    axis.title.y = element_text(size = 12, face = "bold", margin = margin(r = 10)),
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "bottom",
+    plot.margin = margin(10, 10, 10, 10)) +
+  labs(x = "Learning Rate", y = "Model Performance", color = "Interaction Depth", tag = "A") +
+  scale_y_continuous(n.breaks = 4) +
+  scale_color_manual(values = c("#587D8C",  "#F3B06D", "#CB5358")) + #"#6D9F8E",
+  scale_fill_manual(values = c("#587D8C",  "#F3B06D", "#CB5358")) +
+  guides(fill = FALSE)
+
+ggsave("figures/fig_s_3a.jpeg",fig_s_3a, width = 4, height = 4, dpi = 600) 
+
+#### part B
+# Summarize mean test AUC for each hyperparameter combination
+heat_data <- hsearch_results %>% 
+  group_by(shrinkage, interaction.depth) %>%
+  summarise(mean_testAUC = mean(testAUC, na.rm = TRUE),
+            sd_testAUC = sd(testAUC, na.rm = TRUE),
+            .groups = 'drop')
+
+# Plot heatmap
+fig_s_3b <- ggplot(heat_data, aes(x = interaction.depth, y = shrinkage, fill = mean_testAUC)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(mean_testAUC, 4)), color = "black", size = 4) +
+  scale_fill_viridis_c(name = "Mean Test AUC", option = "C", direction = -1) +
+  labs(tag = "B",
+    title = "Mean Test AUC by Hyperparameter Combination",
+    x = "Interaction Depth",
+    y = "Learning Rate (Shrinkage)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "right",
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.text = element_text(size = 10, face = "bold"),
+    axis.title.x = element_text(size = 12, face = "bold", margin = margin(t = 10)),
+    axis.title.y = element_text(size = 12, face = "bold", margin = margin(r = 10)),
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 10))
+
+### combine them
+fig_s_3ab <- ggarrange(fig_s_3a, fig_s_3b, ncol = 1, align = "hv")
+
+ggsave(fig_s_3ab, file = "figures/fig_s_3ab.jpeg", width = 8, height = 8, dpi = 600)
+
+
+```
+
+##Figure S4
+```{r}
+
+## set up colors
+my_gradient <- colorRampPalette(c("#ECE9FC", "#CABFF4", "#A495EB", "#8169E4", "#7B50C8", "#783CA9", "#77278B"))(100)
+
+## call in spatial data
+world_matrix_data <- left_join(worldmap_slim , brt_matrix_data%>% dplyr::select(-admin), by = "iso_a3")
+
+## make function to make consistent maps
+covariate_map <- function(data, var, var_label = "", my_gradient = NULL, limits = NULL, 
+                          legend_position = c(0.08, 0.39),log_transform = FALSE, log_base = 10) {
+  
+  var_sym <- rlang::ensym(var)
+  var_name <- as.character(var_sym)
+  
+  # log transform
+  if (log_transform) {
+    data[[var_name]] <- log(data[[var_name]] + 1, base = log_base)
+  }
+  
+  if(is.null(my_gradient)) {
+    my_gradient = c("#ECE9FC", "#CABFF4", "#A495EB", "#8169E4", "#7B50C8", "#783CA9", "#77278B")
+  }
+  
+  if(is.null(limits)) {
+    limits <- range(data[[as.character(var_sym)]], na.rm = TRUE)
+  }
+  
+  ggplot() +
+    geom_sf(data = data, aes(fill = !!var_sym), color = NA) +
+    geom_sf(data = world, fill = NA, color = "black", size = 0.2) +
+    scale_fill_gradientn(colors = my_gradient, limits = limits, 
+                         labels = scales::label_number(accuracy = 0.01), na.value = "#FCFBFF",
+                         guide = guide_colorbar(direction = "vertical", barwidth = unit(0.4, "cm"), barheight = unit(4, "cm"),
+                                              label.hjust = 0, label.position = "right", title.position = "top")) +
+    coord_sf(expand = FALSE) +
+    theme_void(base_size = 12) +
+    labs(fill = var_label) +
+      theme(legend.position = legend_position, 
+        legend.title = element_text(size = 12,face = "bold"), element_blank(), 
+        legend.text = element_text(size = 11),
+        legend.background = element_rect(fill = "white", color = NA, size = 0.5, linetype = "solid"),
+        legend.margin = margin(t = 2, r = 1, b = 2, l = 4),
+        plot.title = element_text(face = "bold", size = 14),
+        panel.grid.major = element_line(color = "transparent"),
+        panel.background = element_rect(fill = "white", color= "NA"),
+        plot.margin = margin(10,10,10, 10)) 
+}
+
+## apply function to covariates
+map_gini <- covariate_map(world_matrix_data, var = "wb_gini_index", var_label = "Gini Index") + ggtitle("Gini Index")
+map_popcounts <- covariate_map(world_matrix_data, var = "log_sedac_popcounts_sum", var_label = "Counts") + ggtitle("log(Human Population Counts)")
+map_pesti <- covariate_map(world_matrix_data, var = "log_fao_pestusecapita_kmp", var_label = "Per Capita", log_transform = TRUE) + ggtitle("log(Pesticide Use per Capita")
+map_livestockprod <- covariate_map(world_matrix_data, var = "log_wb_livestockprod_index", var_label = "Index") + ggtitle("Livestock Production Index")
+map_conflicttotal <- covariate_map(world_matrix_data, var = "log_acled_conflictevents_total", var_label = "Total") + ggtitle("log(Conflict Exposure Total Events)")
+map_poverty <- covariate_map(world_matrix_data, var = "wb_povertyline_pct", var_label = "%") + ggtitle("% of Population Below National Poverty Line")
+# need to do ISVA chapter
+map_conflictperc <- covariate_map(world_matrix_data, var = "acled_conflictpopexposure_pct", var_label = "%") + ggtitle("Proportion of Population Exposed to Conflict")
+map_agvetfor <- covariate_map(world_matrix_data, var = "wb_gradvetsforestag_pct", var_label = "%") + ggtitle("% of Graduates from Ag, Vet, Forestry Tertiary Schools")
+map_agemployed <- covariate_map(world_matrix_data, var = "wb_employedag", var_label = "%") + ggtitle("% of Population Employed in Ag")
+map_ivsa <- ggplot() +
+    geom_sf(data = world_matrix_data, aes(fill = as.factor(ivsa_chapter)), color = NA) +
+    geom_sf(data = world, fill = NA, color = "black", size = 0.2) +
+    scale_fill_manual(values = c("0" =  "#77278B", "1" = "#ECE9FC"), na.value = "#FCFBFF",labels = c("Absent", "Present",""),
+                      guide = guide_legend(direction = "vertical", keywidth = unit(0.4, "cm"), keyheight = unit(0.4, "cm"),
+                                              label.hjust = 0, label.position = "right", title.position = "top")) +
+    coord_sf(expand = FALSE) +
+    theme_void(base_size = 12) +
+    labs(fill = "IVSA") +
+      theme(legend.position = c(0.08, 0.39), 
+        legend.title = element_text(size = 12,face = "bold"), element_blank(), 
+        legend.text = element_text(size = 11),
+        legend.background = element_rect(fill = "white", color = NA, size = 0.5, linetype = "solid"),
+        legend.margin = margin(t = 2, r = 1, b = 2, l = 4),
+        plot.title = element_text(face = "bold", size = 14),
+        panel.grid.major = element_line(color = "transparent"),
+        panel.background = element_rect(fill = "white", color= "NA"),
+        plot.margin = margin(10,10,10, 10))  +
+  ggtitle("IVSA Chapter Status")
+
+## combine figures
+fig_s_4a <- ggarrange(map_gini, map_poverty, map_popcounts, map_pesti, 
+          ncol = 2, nrow = 2, align = "hv")
+
+ggsave(fig_s_4a, file = "figures/fig_s_4a.jpeg", width = 11, height = 7, dpi = 300) 
+
+fig_s_4b <- ggarrange(map_livestockprod, map_ivsa, map_conflictperc,  map_agemployed, 
+          ncol = 2, nrow = 2, align = "hv")
+ggsave(fig_s_4b, file = "figures/fig_s_4b.jpeg", width = 11, height = 7, dpi = 300) 
+
+
+```
+
+##Figure S5
+```{r}
+## part A
+fig_s_5a <- ggplot() +
+    geom_sf(data = world_matrix_data, aes(fill = tbv_total), color = NA) +
+    geom_sf(data = world, fill = NA, color = "black", size = 0.2) +
+    scale_fill_gradientn(colors = my_gradient, limits = c(min(world_matrix_data$tbv_total, na.rm = TRUE), max(world_matrix_data$tbv_total, na.rm = TRUE)) ,
+                         na.value = "#FCFBFF",
+                         guide = guide_colorbar(direction = "vertical", barwidth = unit(0.4, "cm"), barheight = unit(4, "cm"),
+                                              label.hjust = 0, label.position = "right", title.position = "top")) +
+    coord_sf(expand = FALSE) +
+    theme_void(base_size = 12) +
+    labs(fill = "Total") +
+      theme(legend.position = c(0.08, 0.39), 
+        legend.title = element_text(size = 12,face = "bold"), element_blank(), 
+        legend.text = element_text(size = 11),
+        legend.background = element_rect(fill = "white", color = NA, size = 0.5, linetype = "solid"),
+        legend.margin = margin(t = 2, r = 1, b = 2, l = 4),
+        plot.title = element_text(face = "bold", size = 14),
+        panel.grid.major = element_line(color = "transparent"),
+        panel.background = element_rect(fill = "white", color= "NA"),
+        plot.margin = margin(10,10,10, 10)) +
+  ggtitle("Total Records in ZOVER for select TBVs")
+
+ggsave("figures/fig_s_5a.jpeg",fig_s_5a, width = 4, height = 5, dpi = 600)
+
+## part B
+full_tbv_record <- all_tbvs %>% 
+  group_by(sampling_country) %>% 
+  tally() %>% 
+  rename(total_viruses_all = n,
+         admin = sampling_country) 
+
+
+full_tbv_record_sf <- world %>% 
+  left_join(full_tbv_record, by = "admin")
+
+fig_s_5b <- ggplot() +
+    geom_sf(data = full_tbv_record_sf, aes(fill = total_viruses_all), color = NA) +
+    geom_sf(data = world_matrix_data, fill = NA, color = "black", size = 0.2) +
+    scale_fill_gradientn(colors = my_gradient, limits = c(min(full_tbv_record_sf$total_viruses_all, na.rm = TRUE), max(full_tbv_record_sf$total_viruses_all, na.rm = TRUE)) ,
+                         na.value = "#FCFBFF",
+                         guide = guide_colorbar(direction = "vertical", barwidth = unit(0.4, "cm"), barheight = unit(4, "cm"),
+                                              label.hjust = 0, label.position = "right", title.position = "top")) +
+    coord_sf(expand = FALSE) +
+    theme_void(base_size = 12) +
+    labs(fill = "Total") +
+      theme(legend.position = c(0.08, 0.39), 
+        legend.title = element_text(size = 12,face = "bold"), element_blank(), 
+        legend.text = element_text(size = 11),
+        legend.background = element_rect(fill = "white", color = NA, size = 0.5, linetype = "solid"),
+        legend.margin = margin(t = 2, r = 1, b = 2, l = 4),
+        plot.title = element_text(face = "bold", size = 14),
+        panel.grid.major = element_line(color = "transparent"),
+        panel.background = element_rect(fill = "white", color= "NA"),
+        plot.margin = margin(10,10,10, 10)) +
+  ggtitle("Total Records in ZOVER for all TBVs")
+
+ggsave("figures/fig_s_5b.jpeg",fig_s_5b, width = 4, height = 5, dpi = 600)
+
+### combine figures
+fig_s_5ab <- ggarrange(fig_s_5a, fig_s_5b, ncol = 1, nrow = 2)
+ggsave("figures/fig_s_5ab.jpeg", fig_s_5ab, width = 8, height = 9, dpi = 600)
+```
+
+##Figure S6
+```{r}
+# pull model info
+mod <- brt_presence_results[[1]]$mod      # Access the first model
+best.iter <- brt_presence_results[[1]]$best 
+
+# pull result per zone
+pdp_data <- plot(mod, i.var = "kopp_climatezone_name", n.trees = best.iter, return.grid = TRUE)
+
+# reorder from most to least important zone
+pdp_data$kopp_climatezone_name <- reorder(pdp_data$kopp_climatezone_name, pdp_data$y)
+ 
+# make legend to connect zones to names
+koepp_legend <- data.frame(id = seq(1, 32, 1),
+                            climate = c('Af', 'Am', 'As', 'Aw', 'BSh', 'BSk', 'BWh', 'BWk', 
+                                        'Cfa', 'Cfb', 'Cfc', 'Csa', 'Csb', 'Csc', 'Cwa', 'Cwb', 
+                                        'Cwc', 'Dfa', 'Dfb', 'Dfc', 'Dfd', 'Dsa', 'Dsb', 'Dsc', 
+                                        'Dsd', 'Dwa', 'Dwb', 'Dwc', 'Dwd', 'EF', 'ET', 'Ocean'),
+                            stringsAsFactors = FALSE)
+ # spell out the full names like on wikipedia
+
+koepp_legend$climate_full_name <- c(
+   "Tropical rainforest climate",                                 # Af
+   "Tropical monsoon climate",                                    # Am
+   "Tropical savanna climate with dry summer",                    # As
+   "Tropical savanna climate with dry winter",                    # Aw
+   "Dry Hot semi-arid climate (Steppe, hot)",                         # BSh
+   "Dry Cold semi-arid climate (Steppe, cold)",                       # BSk
+   "Dry Hot desert climate",                                          # BWh
+   "Dry Cold desert climate",                                         # BWk
+   "Temperate Humid subtropical climate, no dry season, hot summer",       # Cfa
+   "Temperate Oceanic climate, no dry season, warm summer",                 # Cfb
+   "Temperate Subpolar oceanic climate, no dry season, cool summer",       # Cfc
+   "Temperate Mediterranean climate, dry hot summer",                       # Csa
+   "Temperate Mediterranean climate, dry warm summer",                      # Csb
+   "Temperate Mediterranean climate, dry cool summer",                      # Csc
+   "Temperate Monsoon-influenced humid subtropical climate, dry winter, hot summer", # Cwa
+   "Temperate Subtropical highland climate or monsoon-influenced, dry winter, warm summer", # Cwb
+   "Temperate Subtropical highland climate or monsoon-influenced, dry winter, cool summer", # Cwc
+   "Continental Humid continental climate, no dry season, hot summer",       # Dfa
+   "Continental Humid continental climate, no dry season, warm summer",      # Dfb
+   "Continental Subarctic climate, no dry season, cool summer",              # Dfc
+   "Continental Subarctic climate, no dry season, very cold winter",         # Dfd
+   "Continental Mediterranean climate, dry hot summer",          # Dsa
+   "Continental Mediterranean climate, dry warm summer",         # Dsb
+   "Continental Mediterranean climate, dry cool summer",         # Dsc
+   "Continental Mediterranean climate, dry very cold winter",    # Dsd
+   "Continental Monsoon-influenced humid continental climate, dry winter, hot summer", # Dwa
+   "Continental Monsoon-influenced humid continental climate, dry winter, warm summer", # Dwb
+   "Continental Monsoon-influenced subarctic climate, dry winter, cool summer", # Dwc
+   "Continental Monsoon-influenced subarctic climate, dry winter, very cold winter", # Dwd
+   "Polar Ice cap climate",                                             # EF
+   "Polar Tundra climate",                                              # ET
+   "Oceanic climate (general label)")                            # Ocean
+
+
+pdp_zone <- pdp_data %>% 
+  left_join(koepp_legend %>% rename(kopp_climatezone_name = climate), by = "kopp_climatezone_name")
+
+
+pdp_zone$climate_full_name <- reorder(pdp_zone$climate_full_name, pdp_data$y)
+
+# plot it
+
+fig_s_6 <- pdp_zone %>% 
+  ggplot(aes(x = climate_full_name, y = y)) +
+  geom_point(color =  "#77278B", size = 2) +
+  labs(title = "Climate Classification", x = "", y = "Partial dependence") +
+  theme_minimal() +
+  coord_flip() +
+  theme(title = element_text(face = "bold"))
+
+ggsave("figures/fig_s_6.jpeg", fig_s_6, width = 8, height = 8, dpi = 600)
+```
