@@ -11,7 +11,7 @@
 
 **Scripts**
 + 1_Data_Cleaning_TraitMatrix.Rmd: script to process raw covariate data from various sources. Will need data files from `trait_matrix`.
-+ 2_DataCleaning_ZOVER.Rmd: script to process raw outcome data from ZOVER. Will need data files from `tickviruses`.
++ 2_DataCleaning_ZOVER.Rmd: script to process raw outcome data from ZOVER. Will need raw data from ZOVER database. 
 + 3_Analysis_BRT.Rmd: script to format, run, and diagnose boosted regression tree models
 + 4_Results_SummariesTables.Rmd: script to recreate tables and within text results.
 + 5_Figures.Rmd: script to recreate figures from main and supplementary text.
